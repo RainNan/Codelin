@@ -1,0 +1,54 @@
+"""把 ops 函数包装成 LangChain 工具（声明 Schema 给 LLM）。
+
+关键设计：workspace 参数用 InjectedToolArg 注解 ——
+LLM 的 Schema 里没有它，调用时由编排层注入，模型无法伪造工作区。
+（声明与执行分离 + 隐藏参数，是防越权的组合拳）
+"""
+from pathlib import Path
+from typing import Annotated
+
+from langchain_core.tools import InjectedToolArg, tool
+
+from app.tools import ops
+
+
+@tool
+def list_dir(path: str, workspace: Annotated[str, InjectedToolArg]) -> str:
+    """列出工作区内指定目录的直接子项。先用它了解项目结构。path 用 "." 表示根目录。"""
+    return ops.list_dir(Path(workspace), path)
+
+
+@tool
+def read_file(path: str, workspace: Annotated[str, InjectedToolArg]) -> str:
+    """读取工作区内一个文本文件，返回带行号的全部内容。适合查看源码/配置。"""
+    return ops.read_file(Path(workspace), path)
+
+
+@tool
+def write_file(
+        path: str, content: str, workspace: Annotated[str, InjectedToolArg]
+) -> str:
+    """创建或完整覆写工作区内一个文件。content 必须是完整文件内容（非增量补丁）。"""
+    return ops.write_file(Path(workspace), path, content)
+
+
+@tool
+def grep(
+        pattern: str,
+        glob: str,
+        workspace: Annotated[str, InjectedToolArg],
+) -> str:
+    """在工作区内递归搜索正则 pattern，返回 文件:行号: 内容。glob 限定文件类型，如 *.py。"""
+    return ops.grep(Path(workspace), pattern, glob or "*")
+
+
+@tool("run_command")
+async def run_command_tool(
+        command: str, workspace: Annotated[str, InjectedToolArg]
+) -> str:
+    """在工作区目录内执行一条 shell 命令（运行测试/安装依赖/git 等）。危险命令会被拦截等待人工审批。"""
+    return await ops.run_command(Path(workspace), command)
+
+
+TOOL_LIST = [list_dir, read_file, write_file, grep, run_command_tool]
+TOOL_REGISTRY = {t.name: t for t in TOOL_LIST}  # key 即 "run_command"
