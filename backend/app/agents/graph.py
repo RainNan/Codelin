@@ -11,6 +11,7 @@ from app.agents.state import CodelinState
 from app.llm.provider import get_llm
 from app.tools import ops
 from app.tools.definitions import TOOL_LIST
+from langgraph.types import Command, interrupt
 
 _llm = get_llm()
 # bind_tools 把 5 个工具的 JSON Schema 绑到 LLM 上（只是声明，不执行）
@@ -36,9 +37,15 @@ async def execute_node(state: CodelinState) -> dict:
     """执行上一条 AIMessage 要求的所有工具调用，结果以 ToolMessage 追加。"""
     last: AIMessage = state["messages"][-1]
     ws = Path(state["workspace"])
+    rejected = state.get("approval_decision") == "rejected"
     results: list[ToolMessage] = []
     for call in last.tool_calls:
         name, args = call["name"], dict(call["args"])
+        if (rejected and name == "run_command"
+                and ops.is_dangerous(args.get("command", ""))):
+            obs = f"[人工审批：用户拒绝执行] {args['command']}。请改用不需要审批的替代方案。"
+            results.append(ToolMessage(content=obs, tool_call_id=call["id"], name=name))
+            continue
         t0 = time.perf_counter()
         try:
             if name == "run_command":
@@ -50,25 +57,53 @@ async def execute_node(state: CodelinState) -> dict:
             ok = True
         except Exception as e:
             obs, ok = f"工具错误: {type(e).__name__}: {e}", False
-        print(f"[tool] {name} ok={ok} {int((time.perf_counter()-t0)*1000)}ms")
+        print(f"[tool] {name} ok={ok} {int((time.perf_counter() - t0) * 1000)}ms")
         results.append(
             ToolMessage(content=str(obs), tool_call_id=call["id"], name=name)
         )
-    return {"messages": results}
+    return {"messages": results, "approval_decision": None}
+
+
+async def approve_node(state: CodelinState) -> dict:
+    """扫描本轮 tool_calls，发现危险命令则挂起等待人工审批。
+
+    interrupt() 在恢复重放时直接返回用户提交的决定，
+    所以本节点自身永远没有副作用 —— 这正是拆独立节点的原因。
+    """
+    last: AIMessage = state["messages"][-1]
+    dangerous = [
+        c["args"].get("command", "")
+        for c in last.tool_calls
+        if c["name"] == "run_command" and ops.is_dangerous(c["args"].get("command", ""))
+    ]
+    decision = interrupt({
+        "tools": [{"name": "run_command", "commands": dangerous}],
+        "reason": "检测到影响环境的命令，需要人工审批",
+    })
+    return {"approval_decision": decision}  # "approved" | "rejected"
 
 
 def route_after_agent(state: CodelinState) -> str:
     last = state["messages"][-1]
-    return "execute" if getattr(last, "tool_calls", None) else END
-
+    calls = getattr(last, "tool_calls", None) or []
+    if not calls:
+        return END
+    has_dangerous = any(
+        c["name"] == "run_command" and ops.is_dangerous(c["args"].get("command", ""))
+        for c in calls
+    )
+    return "approve" if has_dangerous else "execute"
 
 def build_graph(checkpointer=None):
     g = StateGraph(CodelinState)
     g.add_node("agent", agent_node)
+    g.add_node("approve", approve_node)
     g.add_node("execute", execute_node)
     g.add_edge(START, "agent")
-    g.add_conditional_edges("agent", route_after_agent, {"execute": "execute", END: END})
-    g.add_edge("execute", "agent")   # 工具结果回灌 → 形成循环
+    g.add_conditional_edges("agent", route_after_agent,
+                            {"approve": "approve", "execute": "execute", END: END})
+    g.add_edge("approve", "execute")
+    g.add_edge("execute", "agent")   # execute 完成后清空审批标记再回 agent
     return g.compile(checkpointer=checkpointer)
 
 
