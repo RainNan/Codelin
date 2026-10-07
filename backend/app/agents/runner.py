@@ -6,7 +6,7 @@ from typing import AsyncGenerator
 from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.types import Command
 
-from app.agents.graph import graph
+from app.agents import graph as graph_mod
 
 
 async def sse_events(
@@ -28,7 +28,7 @@ async def sse_events(
 
     try:
         # 双流模式：messages 拿 token 级增量，updates 拿节点级完成事件
-        async for mode, chunk in graph.astream(
+        async for mode, chunk in graph_mod.graph.astream(
                 inputs, cfg, stream_mode=["messages", "updates"],
         ):
             if mode == "messages":
@@ -58,7 +58,7 @@ async def sse_events(
             # execute 节点的 updates 单独处理：
             # updates 的 dict 里 node 为 "execute"
         # 流结束仍可能有挂起的中断（approve 节点）
-        snapshot = await graph.aget_state(cfg)
+        snapshot = await graph_mod.graph.aget_state(cfg)
         if snapshot.next:  # 非空 = 图停在某节点等待
             # for task in snapshot.tasks.values():
             for task in snapshot.tasks:

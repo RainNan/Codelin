@@ -1,6 +1,7 @@
 """工具的纯执行逻辑：框架无关，可单测，被 Agent 执行器和 MCP Server 共用。"""
 import asyncio
 import re
+import subprocess
 from pathlib import Path
 
 from app.tools.security import ToolError, resolve_safe_path
@@ -87,17 +88,18 @@ def grep(
 
 
 async def run_command(workspace: Path, command: str) -> str:
-    """在工作区目录内执行 shell 命令（超时+输出截断+行数限制）。"""
-    proc = await asyncio.create_subprocess_shell(
-        command,
-        cwd=str(workspace),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,  # 合并标准错误，LLM 能看到报错才能自我修正
-    )
+    """在线程中执行命令，兼容 Windows Selector 事件循环。"""
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=CMD_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise ToolError(f"命令超时（>{CMD_TIMEOUT_SECONDS}s）被终止: {command}")
-    text = out.decode(errors="replace")[:MAX_OUTPUT_CHARS]
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            command,
+            shell=True,
+            cwd=str(workspace),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=CMD_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ToolError(f"命令超时（>{CMD_TIMEOUT_SECONDS}s）被终止: {command}") from exc
+    text = proc.stdout.decode(errors="replace")[:MAX_OUTPUT_CHARS]
     return f"[exit code {proc.returncode}]\n{text}"
