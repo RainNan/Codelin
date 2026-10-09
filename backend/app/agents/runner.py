@@ -13,7 +13,7 @@ async def sse_events(
         thread_id: str,
         workspace: str,
         user_message: str | None,
-        session_id:str,
+        session_id: str,
         *,
         resume: Command | None = None,
 ) -> AsyncGenerator[str, None]:
@@ -21,6 +21,7 @@ async def sse_events(
     inputs = resume or {
         "messages": [HumanMessage(content=user_message)],
         "workspace": workspace,
+        "session_id": session_id,
     }
     t0 = time.perf_counter()
 
@@ -76,5 +77,8 @@ async def sse_events(
 async def resume_events(thread_id: str, approved: bool) -> AsyncGenerator[str, None]:
     """用户点击批准/拒绝后，从断点恢复图执行。"""
     cmd = Command(resume="approved" if approved else "rejected")
-    async for ev in sse_events(thread_id, workspace="", user_message=None, resume=cmd):
+    async for ev in sse_events(
+            thread_id, workspace="", user_message=None,
+            session_id=thread_id, resume=cmd,
+    ):
         yield ev

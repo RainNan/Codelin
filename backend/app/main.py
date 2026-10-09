@@ -68,7 +68,9 @@ async def chat(
 
     async def stream():
         final_text: list[str] = []
-        async for ev in sse_events(s.id, s.workspace_path, body.message):
+        async for ev in sse_events(
+                s.id, s.workspace_path, body.message, session_id=s.id,
+        ):
             if ev.startswith('event: token'):
                 final_text.append(json.loads(ev.split("data: ", 1)[1])["content"])
             yield ev
