@@ -1,0 +1,243 @@
+import { test, expect, type Page } from '@playwright/test'
+import AxeBuilder from '@axe-core/playwright'
+
+async function fixture(page: Page) {
+  const bodies: { path: string; body: any }[] = []
+  const documents = new Map([['main.ts', { content: 'const answer = 42;\n', version: 'a'.repeat(64) }], ['src/hello.py', { content: 'print("你好")\n', version: 'b'.repeat(64) }]])
+  const directories = new Set(['.', 'src'])
+  let conflict = false, failSave = false, failList = false
+  let releaseChat: (() => void) | undefined
+  const info = (path: string, type = 'file') => ({ name: path.split('/').at(-1), path, type, size: type === 'file' ? 20 : null, modified_at: '2026-10-09T00:00:00Z' })
+  await page.route('**/api/**', async route => {
+    const req = route.request(), url = new URL(req.url()), path = url.pathname, method = req.method()
+    const body = req.postDataJSON(); bodies.push({ path, body })
+    const json = (data: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
+    if (path.includes('/auth/')) return json({ token: 'files-token', username: 'file-tester' })
+    if (path === '/api/workspaces') return json([{ id: 'w1', name: '项目一', created_at: '' }, { id: 'w2', name: '项目二', created_at: '' }, { id: 'w3', name: '新项目', created_at: '' }])
+    if (path === '/api/sessions') return json(method === 'POST' ? { id: 's-new', title: '新会话', workspace_id: body?.workspace_id } : [{ id: 's1', title: '讨论项目一', workspace_id: 'w1' }, { id: 's2', title: '讨论项目二', workspace_id: 'w2' }])
+    if (path.endsWith('/messages')) return json([])
+    if (path.endsWith('/files')) {
+      if (failList) return json({ detail: '目录访问失败' }, 403)
+      const current = url.searchParams.get('path') || '.'
+      const entries = [...directories].filter(p => p !== '.' && (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '.') === current).map(p => info(p, 'directory'))
+      entries.push(...[...documents.keys()].filter(p => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '.') === current).map(p => info(p)))
+      return json({ path: current, entries, total: entries.length, next_offset: null })
+    }
+    if (path.endsWith('/file')) {
+      const filePath = method === 'GET' ? url.searchParams.get('path')! : body.path
+      if (filePath === 'binary.png') return json({ detail: '二进制文件不支持文本编辑' }, 415)
+      const current = documents.get(filePath)
+      if (!current) return json({ detail: '文件不存在' }, 404)
+      if (method === 'PUT') {
+        if (failSave) return json({ detail: '保存权限不足' }, 403)
+        if (conflict || body.version !== current.version) { conflict = false; current.content = 'AI changed\n'; current.version = 'c'.repeat(64); return json({ detail: '文件已被修改，请重新载入或比较差异后保存' }, 409) }
+        current.content = body.content; current.version = 'd'.repeat(64)
+      }
+      return json({ ...info(filePath), ...current, operation: 'updated' })
+    }
+    if (path.endsWith('/entries')) {
+      if (documents.has(body.path) || directories.has(body.path)) return json({ detail: '目标已存在' }, 409)
+      if (body.type === 'directory') directories.add(body.path); else documents.set(body.path, { content: '', version: 'e'.repeat(64) })
+      return json(info(body.path, body.type), 201)
+    }
+    if (path === '/api/chat') {
+      await new Promise<void>(resolve => { releaseChat = resolve })
+      documents.set('main.ts', { content: 'AI stream change\n', version: 'f'.repeat(64) })
+      const sse = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+      return route.fulfill({ contentType: 'text/event-stream', body: sse('token', { content: '已更新 main.ts。' }) + sse('file_changed', { workspace_id: 'w1', path: 'main.ts', version: 'f'.repeat(64) }) + sse('approval_required', { thread_id: 's1', reason: '运行命令需要确认', tools: [{ name: 'run_command', commands: ['npm test'] }] }) })
+    }
+    return json({ detail: '不存在' }, 404)
+  })
+  await page.goto('/')
+  await page.getByLabel('用户名', { exact: true }).fill('file-tester')
+  await page.getByLabel('密码', { exact: true }).fill('password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await expect(page.locator('.workspace-header')).toContainText('讨论项目一')
+  await page.getByRole('button', { name: '工作空间文件', exact: true }).click()
+  await expect(page.getByRole('button', { name: '文件：main.ts', exact: true })).toBeVisible()
+  return { documents, bodies, conflict: () => { conflict = true }, failSave: (value: boolean) => { failSave = value }, failList: (value: boolean) => { failList = value }, releaseChat: async () => { await expect.poll(() => Boolean(releaseChat)).toBe(true); releaseChat!() } }
+}
+const model = (page: Page) => page.getByRole('textbox', { name: '编辑文件：main.ts' })
+async function edit(page: Page, text: string) {
+  await model(page).focus(); await page.keyboard.press('ControlOrMeta+A'); await page.keyboard.insertText(text)
+}
+
+test('directory keyboard navigation, breadcrumbs, create, duplicate tabs and save', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  const state = await fixture(page)
+  await page.getByRole('button', { name: '文件夹：src', exact: true }).focus(); await page.keyboard.press('Enter')
+  await expect(page.getByRole('button', { name: '文件：hello.py', exact: true })).toBeVisible()
+  await page.getByRole('navigation', { name: '当前目录' }).getByRole('button', { name: '根目录' }).click()
+  await page.getByRole('button', { name: '文件：main.ts', exact: true }).dblclick()
+  await expect(model(page)).toBeVisible()
+  await page.getByRole('button', { name: '文件：main.ts', exact: true }).dblclick()
+  await expect(page.locator('.file-tab-wrap')).toHaveCount(1)
+  await edit(page, 'const answer = 43;\n'); await page.keyboard.press('ControlOrMeta+S')
+  await expect(page.getByText('已保存', { exact: true })).toBeVisible()
+  expect(state.documents.get('main.ts')!.content).toBe('const answer = 43;\n')
+  expect(state.bodies.find(call => call.path.endsWith('/file') && call.body)?.body.version).toBe('a'.repeat(64))
+  await page.getByRole('button', { name: '新建文件夹', exact: true }).click()
+  await page.getByLabel('名称', { exact: true }).fill('new-folder'); await page.getByRole('button', { name: '创建', exact: true }).click()
+  await expect(page.getByRole('button', { name: '文件夹：new-folder', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建文件', exact: true }).click()
+  await page.getByLabel('名称', { exact: true }).fill('new.ts'); await page.getByRole('button', { name: '创建', exact: true }).click()
+  await expect(page.getByRole('tab', { name: /new.ts/ })).toBeVisible()
+  const divider = page.getByRole('separator', { name: '调整文件与对话宽度' })
+  await divider.focus(); await page.keyboard.press('ArrowLeft')
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('codelin.split'))).not.toBeNull()
+  await page.getByRole('button', { name: '专注文件', exact: true }).click()
+  await page.getByRole('button', { name: '打开文件：main.ts', exact: true }).click()
+  await expect(page.getByRole('button', { name: '专注文件', exact: true })).toHaveAttribute('aria-pressed', 'true')
+})
+
+test('save errors keep drafts, close confirmation and version conflict choices', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  const state = await fixture(page)
+  await page.getByRole('button', { name: '打开文件：main.ts', exact: true }).click()
+  await edit(page, 'my draft'); state.failSave(true)
+  await page.keyboard.press('ControlOrMeta+S')
+  await expect(page.locator('.editor-notice[role=alert]')).toContainText('保存权限不足')
+  await page.getByRole('button', { name: '关闭文件：main.ts' }).click()
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(page.getByLabel('未保存', { exact: true })).toBeVisible()
+  state.failSave(false); state.conflict(); await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByText('文件已在外部更新，你的修改已保留。')).toBeVisible()
+  await page.getByRole('button', { name: '比较差异' }).click()
+  await expect(page.getByText('左：外部文件 · 右：你的草稿（只读比较）')).toBeVisible()
+  await page.getByRole('button', { name: '保留草稿' }).click()
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByText('已保存', { exact: true })).toBeVisible()
+  expect(state.documents.get('main.ts')!.content).toBe('my draft')
+  await edit(page, 'abandoned'); await page.getByRole('button', { name: '关闭文件：main.ts' }).click()
+  await page.getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page.getByRole('tab', { name: /main.ts/ })).toHaveCount(0)
+})
+
+test('stream survives opening and hiding files, refreshes AI changes and retains approval', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  const state = await fixture(page)
+  await page.getByLabel('给 Codelin 发送消息').fill('更新文件'); await page.getByRole('button', { name: '发送消息' }).click()
+  await page.getByRole('button', { name: '打开文件：main.ts', exact: true }).click()
+  await expect(model(page)).toBeVisible()
+  await page.getByRole('button', { name: '专注文件', exact: true }).click()
+  await expect(page.getByRole('button', { name: '正在生成', exact: true })).toBeVisible()
+  await state.releaseChat()
+  await expect(page.getByRole('button', { name: '等待审批', exact: true })).toBeVisible()
+  await expect(page.locator('.monaco-editor .view-lines')).toContainText('AI stream change')
+  await page.getByRole('button', { name: '分栏', exact: true }).click()
+  await expect(page.getByRole('button', { name: '批准执行' })).toBeVisible()
+  await page.getByRole('button', { name: '专注对话', exact: true }).click()
+  await expect(page.getByText('已更新 main.ts。', { exact: true })).toBeVisible()
+})
+
+test('workspace switch preserves file and chat drafts and binds the matching session', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  const state = await fixture(page)
+  await page.getByRole('button', { name: '打开文件：main.ts', exact: true }).click()
+  await edit(page, 'workspace one draft')
+  await page.getByLabel('给 Codelin 发送消息').fill('聊天草稿一')
+  await page.getByLabel('当前工作区').selectOption('w2')
+  await expect(page.getByLabel('给 Codelin 发送消息')).toHaveValue('')
+  await page.getByLabel('当前工作区').selectOption('w1')
+  await expect(page.getByLabel('给 Codelin 发送消息')).toHaveValue('聊天草稿一')
+  await expect(page.getByLabel('未保存', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '将当前文件路径添加到对话' }).click()
+  await expect(page.getByLabel('给 Codelin 发送消息')).toHaveValue(/main.ts/)
+  expect(state.bodies.filter(call => call.path === '/api/chat')).toHaveLength(0)
+})
+
+test('mobile explicit opening, return navigation and directory failure recovery', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const state = await fixture(page)
+  await page.getByRole('button', { name: '打开文件夹：src', exact: true }).click()
+  await page.getByRole('button', { name: '返回上一级目录' }).click()
+  state.failList(true); await page.getByRole('button', { name: '刷新目录与文件' }).click()
+  await expect(page.getByRole('alert')).toContainText('目录访问失败')
+  state.failList(false); await page.getByRole('button', { name: '重试目录', exact: true }).click()
+  await page.getByRole('button', { name: '打开文件：main.ts', exact: true }).click()
+  await expect(model(page)).toBeVisible()
+  await expect(page.getByLabel('给 Codelin 发送消息')).not.toBeVisible()
+  expect((await page.locator('.monaco-region').boundingBox())!.height).toBeGreaterThan(300)
+  await page.getByRole('button', { name: '返回文件', exact: true }).click()
+  await expect(page.getByRole('button', { name: '文件：main.ts', exact: true })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
+})
+
+test('dirty files preserve local edits on AI events and save-and-close completes only after success', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  const state = await fixture(page)
+  await page.getByRole('button', { name: '打开文件：main.ts', exact: true }).click()
+  await edit(page, 'unsaved human change')
+  await page.getByLabel('给 Codelin 发送消息').fill('AI update'); await page.getByRole('button', { name: '发送消息' }).click()
+  await state.releaseChat()
+  await expect(page.getByText('文件已在外部更新，你的修改已保留。')).toBeVisible()
+  await expect(page.locator('.monaco-editor .view-lines')).toContainText('unsaved human change')
+  await page.getByRole('button', { name: '保留草稿' }).click()
+  await page.getByRole('button', { name: '关闭文件：main.ts' }).click()
+  state.failSave(true)
+  await page.getByRole('button', { name: '保存并关闭' }).click()
+  await expect(page.getByRole('dialog')).toContainText('保存权限不足')
+  await expect(page.locator('.file-tab-wrap')).toHaveCount(1)
+  state.failSave(false); await page.getByRole('button', { name: '保存并关闭' }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByRole('tab', { name: /main.ts/ })).toHaveCount(0)
+  expect(state.documents.get('main.ts')!.content).toBe('unsaved human change')
+})
+
+test('unsupported and disappeared files show errors, and a workspace without a session creates an association', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  const state = await fixture(page)
+  state.documents.set('binary.png', { content: '', version: 'a'.repeat(64) })
+  await page.getByRole('button', { name: '刷新目录与文件' }).click()
+  await page.getByRole('button', { name: '打开文件：binary.png', exact: true }).click()
+  await expect(page.locator('.file-editor')).toContainText('二进制文件不支持文本编辑')
+  expect(await page.getByRole('tab', { name: /binary.png/ }).count()).toBe(0)
+  state.documents.delete('main.ts')
+  await page.getByRole('button', { name: '打开文件：main.ts', exact: true }).click()
+  await expect(page.locator('.file-editor')).toContainText('文件不存在')
+  await page.getByLabel('当前工作区').selectOption('w3')
+  await expect(page.locator('.workspace-header')).toContainText('新会话')
+  expect(state.bodies.find(call => call.path === '/api/sessions' && call.body)?.body).toEqual({ workspace_id: 'w3' })
+})
+
+test('AI update arriving during an in-flight save is checked again after the save completes', async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 1000 })
+  const state = await fixture(page)
+  let releaseSave: (() => void) | undefined
+  await page.route('**/api/workspaces/w1/file', async route => {
+    if (route.request().method() !== 'PUT') return route.fallback()
+    const body = route.request().postDataJSON()
+    // The HTTP writer has committed; its response is still in transit when AI writes.
+    state.documents.set('main.ts', { content: body.content, version: 'd'.repeat(64) })
+    await new Promise<void>(resolve => { releaseSave = resolve })
+    return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ path: 'main.ts', name: 'main.ts', type: 'file', size: body.content.length, modified_at: '', version: 'd'.repeat(64), operation: 'updated' }) })
+  })
+  await page.getByRole('button', { name: '打开文件：main.ts', exact: true }).click()
+  await edit(page, 'human submitted')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect.poll(() => Boolean(releaseSave)).toBe(true)
+  await page.getByLabel('给 Codelin 发送消息').fill('write after save'); await page.getByRole('button', { name: '发送消息' }).click()
+  await state.releaseChat()
+  await expect(page.getByRole('button', { name: '批准执行' })).toBeVisible()
+  releaseSave!()
+  await expect(page.locator('.monaco-editor .view-lines')).toContainText('AI stream change')
+  expect(state.documents.get('main.ts')!.content).toBe('AI stream change\n')
+})
+
+test('medium screens show one pane at a time and preserve both file and chat drafts', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 900 })
+  await fixture(page)
+  await page.getByLabel('给 Codelin 发送消息').fill('中屏聊天草稿')
+  await page.getByRole('button', { name: '打开文件：main.ts', exact: true }).click()
+  await expect(model(page)).toBeVisible()
+  await expect(page.getByLabel('给 Codelin 发送消息')).not.toBeVisible()
+  expect((await page.locator('.monaco-region').boundingBox())!.height).toBeGreaterThan(300)
+  await edit(page, 'medium file draft')
+  await page.getByRole('tab', { name: '对话', exact: true }).click()
+  await expect(page.getByLabel('给 Codelin 发送消息')).toHaveValue('中屏聊天草稿')
+  await expect(model(page)).not.toBeVisible()
+  await page.getByRole('tab', { name: '文件', exact: true }).click()
+  await expect(page.locator('.monaco-editor .view-lines')).toContainText('medium file draft')
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
+})

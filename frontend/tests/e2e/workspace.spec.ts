@@ -7,9 +7,10 @@ async function demo(page: Page) {
   await page.getByRole('button', { name: '体验演示' }).click()
 }
 
-async function mockBackend(page: Page, chat: 'done' | 'approval' | 'broken' = 'done') {
+async function mockBackend(page: Page, chat: 'done' | 'approval' | 'broken' | 'title' = 'done') {
   const calls: { path: string; method: string; body: unknown; authorization: string | undefined }[] = []
   let removed = false
+  let titleReads = 0
   await page.route('**/api/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method()
     calls.push({ path, method, body: request.postDataJSON(), authorization: request.headers().authorization })
@@ -17,15 +18,17 @@ async function mockBackend(page: Page, chat: 'done' | 'approval' | 'broken' = 'd
     if (path.startsWith('/api/auth/')) return json({ token: 'test-token', username: 'tester' })
     if (path === '/api/sessions' && method === 'GET') return json(removed ? [] : [{ id: 'existing', title: '已有项目讨论', created_at: '2026-10-09T00:00:00Z' }])
     if (path === '/api/sessions' && method === 'POST') return json({ id: 'new-session', title: '新会话' })
+    if (path === '/api/sessions/new-session' && method === 'GET') return json({ id: 'new-session', title: ++titleReads > 1 ? '实现登录功能' : '新会话' })
     if (path === '/api/sessions/existing/messages') return json([{ role: 'user', content: '历史问题' }, { role: 'assistant', content: '历史回复' }])
     if (method === 'DELETE') { removed = true; return json({ ok: true }) }
     if (path === '/api/chat' || path === '/api/chat/approve') {
       const sse = (event: string, data: unknown) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
       const body = path.endsWith('/approve') ? sse('token', { content: '审批后继续完成。' }) + sse('done', { elapsed_ms: 45 }) :
+        (chat === 'title' ? sse('session_title_pending', { session_id: 'new-session', title: '新会话' }) : '') +
         sse('tool_start', { id: 'tool-1', name: 'read_file', args: { path: 'main.py' } }) +
         sse('tool_result', { id: 'tool-1', name: 'read_file', preview: 'print("你好")' }) +
         sse('token', { content: '你好，这是来自接口的回复。' }) +
-        (chat === 'done' ? sse('done', { elapsed_ms: 120 }) : chat === 'approval' ? sse('approval_required', { thread_id: 'new-session', reason: '命令需要审批', tools: [{ name: 'run_command', commands: ['npm install'] }] }) : '')
+        (chat === 'done' || chat === 'title' ? sse('done', { elapsed_ms: 120 }) : chat === 'approval' ? sse('approval_required', { thread_id: 'new-session', reason: '命令需要审批', tools: [{ name: 'run_command', commands: ['npm install'] }] }) : '')
       return route.fulfill({ status: 200, contentType: 'text/event-stream', body })
     }
     return json({ detail: 'Not found' }, 404)
@@ -67,6 +70,18 @@ test('login, persisted history, chat stream and tool results follow the backend 
   await page.reload()
   await expect(page.getByRole('button', { name: /^已有项目讨论/ })).toBeVisible()
   await expect(page.getByRole('heading', { name: '欢迎回来。' })).not.toBeVisible()
+})
+
+test('an asynchronous title updates the sidebar and preserves the reply and draft', async ({ page }) => {
+  const calls = await mockBackend(page, 'title')
+  await page.getByLabel('给 Codelin 发送消息').fill('帮我实现登录功能')
+  await page.getByRole('button', { name: '发送消息' }).click()
+  await expect(page.getByText('你好，这是来自接口的回复。', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('给 Codelin 发送消息')).toBeEnabled()
+  await page.getByLabel('给 Codelin 发送消息').fill('下一条消息的草稿')
+  await expect(page.getByRole('button', { name: /^实现登录功能/ })).toBeVisible()
+  await expect(page.getByLabel('给 Codelin 发送消息')).toHaveValue('下一条消息的草稿')
+  expect(calls.filter(call => call.path === '/api/sessions/new-session').length).toBe(2)
 })
 
 test('real approval posts the boolean and resumes the same session', async ({ page }) => {

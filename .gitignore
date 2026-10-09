@@ -5,6 +5,8 @@ __pycache__/
 node_modules/
 dist/
 workspaces/
+.file-locks/
+.backups/
 .DS_Store
 .pytest_cache/
 evals/results/

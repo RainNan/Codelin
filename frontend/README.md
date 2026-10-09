@@ -1,41 +1,49 @@
 # Codelin 前端
 
-React + TypeScript + Vite 的 AI 编程工作台，按照 UI Skills 的 baseline-ui、fixing-accessibility 和 Apple 设计规范实现。使用 Tailwind CSS 4、Radix 无障碍对话框和 Lucide 图标。
+React 19 + TypeScript + Vite 的 AI 编程工作台。沿用 Apple 风格、系统字体、浅灰白背景、克制蓝色与独立深色变量。ui-skills-root 选用 emilkowalski/apple-design 和 ibelick/fixing-accessibility；复杂交互使用 Radix Dialog/Tabs，拖动和键盘分隔条使用 react-resizable-panels，图标统一使用 Lucide。
 
 ## 启动
 
-需要 Node.js 20.19+ 或 22.12+（本机已使用 Node.js 24 验证）。在 PowerShell 中执行：
+建议 Node.js 24；Vite 最低要求 Node.js 20.19+ 或 22.12+，单元测试脚本需要支持 --experimental-strip-types 的 Node.js。
 
 ```powershell
 cd D:\P\Codelin\frontend
-npm install
+npm ci
 npm run dev
 ```
 
-打开 http://127.0.0.1:5173。后端默认运行在 http://127.0.0.1:8000，开发服务器将 `/api` 代理到该地址，无需修改后端 CORS。可以在 `.env` 中按 `.env.example` 配置代理目标。
+访问 http://127.0.0.1:5173。默认将 /api 代理到 http://127.0.0.1:8000；通过 .env.example 配置 VITE_BACKEND_URL。需要后端启动且已执行工作区迁移，详见项目根目录 README 和 backend/WORKSPACE_API.md。
 
-登录页面的“体验演示”可直接预览交互；所有示例均明确标注，不发送后端请求，不执行命令。退出演示后可以注册或登录真实账户。
+## 文件工作台
 
-## 功能与接口
+工作空间入口可展开 / 收起文件栏。文件栏提供工作区切换、面包屑、上一级、刷新、新建文件 / 文件夹、目录列表和加载更多。单击选择，双击或 Enter 打开；方向键、Home、End 移动选择。每一行的打开箭头支持触屏操作，不依赖双击。文件夹优先和自然排序来自后端。
 
-| 功能 | 后端接口 |
+宽屏（1200px 起）默认编辑器 / 对话分栏，支持专注文件与专注对话；768–1199px 使用文件 / 对话标签；手机使用独立文件列表、编辑与聊天视图。导航、文件栏和主内容的宽度可调整，分隔条支持键盘操作，布局偏好保存于 localStorage。
+
+新建会话复用当前工作区。切换工作区优先切换到已有的关联会话，没有会话则先创建；创建失败时保留当前会话。AI 生成期间只禁用会话和工作区切换，文件操作与布局切换仍可用。进入目录不会改变 AI 的根目录。刷新后恢复当前账户最后选择的、仍存在的会话。
+
+Monaco 按需加载并本地打包 worker，不连接 CDN。编辑器支持标签、语言识别、高亮、行号、草稿保留、保存、Ctrl/Cmd + S 和关闭确认。关闭按钮位于当前文件工具栏右侧。相同文件只开一个标签。切换工作区时仍保留页面内该工作区的草稿。
+
+外部更新处理：无草稿的文件自动载入；有草稿时显示提示，可以重新载入、保留草稿或打开只读差异比较。保留草稿将外部版本作为下一次保存基线，不立即写入。所有保存都带后端的 SHA-256 版本，冲突返回 409；错误不清除用户草稿。保存中继续编辑也会保留新增修改。刷新目录同时检查所有打开文件。
+
+点击“将当前文件路径添加到对话”只插入相对路径，随后可编辑输入并自主发送。对话隐藏仍保持流式请求、消息、输入、审批状态和滚动位置；生成、新回复、待审批有提示。
+
+## 模块与接口
+
+| 模块 | 职责 |
 | --- | --- |
-| 注册 / 登录 | `POST /api/auth/register`、`POST /api/auth/login` |
-| 会话列表 / 创建 | `GET /api/sessions`、`POST /api/sessions` |
-| 删除会话 | `DELETE /api/sessions/{sid}`，前端提供删除确认 |
-| 加载历史消息 | `GET /api/sessions/{sid}/messages` |
-| 流式对话 | `POST /api/chat`，携带 `session_id`、`message` |
-| 命令审批与恢复 | `POST /api/chat/approve`，携带 `session_id`、`approved` |
+| src/App.tsx | 登录、会话、工作区关联、聊天、审批与 SSE 文件事件 |
+| src/components/Workbench.tsx | 稳定面板、响应式视图、布局保存、隐藏对话状态 |
+| src/components/FileBrowser.tsx | 目录请求、面包屑、键盘操作、分页、创建与错误恢复 |
+| src/components/FileEditor.tsx | Monaco、标签、模型 / 视图状态、关闭提示、差异比较 |
+| src/lib/useWorkspaceFiles.ts | 按工作区缓存文件、草稿、版本、冲突与异步请求保护 |
+| src/lib/api.ts | Bearer 认证、结构化 JSON 文件 API 与流式聊天 |
 
-注册和登录使用 JSON `{ username, password }`。登录凭证存储于当前标签页的 `sessionStorage`，后续请求携带 Bearer token，401 会返回登录页。
+文件接口使用 /api/workspaces、/api/workspaces/{wid}/files、/file 和 /entries，不传用户 ID 或服务器绝对路径。会话创建提交 workspace_id。SSE 兼容 token、tool_start、tool_result、approval_required、done、error，并处理 file_changed、workspace_changed。
 
-SSE 支持 `token`、`tool_start`、`tool_result`、`approval_required`、`done`、`error`。中文多字节内容和跨网络分片的事件均可正确解析。Markdown 不启用原始 HTML，链接使用安全协议过滤，外链附带 `noopener noreferrer`。
+登录凭证仅存于当前标签页 sessionStorage，401 返回登录页。文件 API 与 AI 展示输出完全独立；原文不带行号且不截断。非 UTF-8、二进制和超过默认 2 MiB 的文件显示明确错误，不创建空文件标签。
 
-支持浅色 / 深色模式、手机导航、会话搜索、消息与代码复制、执行记录展开和错误重试。停止按钮只中止浏览器接收；现有后端没有取消执行接口，因此会明确提示服务端可能继续执行。
-
-后端没有文件上传、项目目录选择、会话重命名、模型切换等接口，前端不会展示这些不可用的操作。每个会话使用后端新建的 `workspaces/{sid}` 目录。
-
-## 验证与构建
+## 测试、构建与预览
 
 ```powershell
 npm test
@@ -44,16 +52,25 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-端到端测试使用按后端真实契约编写的接口替身，验证请求格式、认证、历史消息、审批、断线、会话删除和无障碍。它不代替完整后端联调。运行测试后，`preview/` 中会生成桌面、登录、深色和手机截图。
+默认运行 17 个受控浏览器测试，并跳过真实后端验收。真实联调需要已启动后端：
 
-构建产物位于 `dist/`。生产部署建议通过同源反向代理将 `/api` 转发到 FastAPI，并关闭代理响应缓冲以支持 SSE。如配置 `VITE_API_BASE_URL` 为独立 API 域名，后端需要允许该站点的 CORS。
+```powershell
+$env:CODELIN_LIVE = '1'
+$env:CODELIN_BACKEND = 'http://127.0.0.1:8000'
+$env:VITE_BACKEND_URL = 'http://127.0.0.1:8000'
+npm run test:e2e
+```
 
-## 当前后端联调注意事项
+若现有端口运行旧版服务，可以另开后端 8001，再设置上述两个后端地址为 8001，并设置 CODELIN_FRONTEND=http://127.0.0.1:5174。测试会启动独立前端。不要在测试运行时修改应用代码，开发服务器热更新会影响状态验证。
 
-前端实现后，联调时已修复聊天和审批恢复漏传 `session_id` 的问题，并将会话 ID 写入图状态。以下是其余已知后端限制：
+live-files.spec.ts 通过真实接口创建独立验收用户、工作区和文件，检查保存、外部更新冲突、跨用户隔离、路径安全和手机操作，不请求真实模型。截图在 preview/workspace-files-light.png、workspace-files-dark.png、workspace-files-mobile.png，这些截图来自真实接口。其他演示截图保留明确的演示标识。
 
-1. `/api/chat/approve` 没有将恢复后生成的回复存入 `Message` 表。因此前端当前标签页可看到恢复回复，但重新加载历史时可能丢失该部分。后端也未提供审批状态查询，刷新页面无法恢复尚未决定的审批卡片。
-2. 会话删除仅删除 `ChatSession`，`Message` 等外键没有配置级联删除；存在消息的会话可能被数据库拒绝删除。前端会保留会话并显示后端错误。
-3. 完整联调还需要 PostgreSQL（含 pgvector）、Redis 和有效的模型配置。它们由现有后端配置，不应把密钥写入前端环境变量。
+构建输出在 dist/。Monaco 和 TypeScript worker 较大，构建有包大小提示；文件编辑器被拆为按需模块。生产部署建议静态压缩 / 缓存及同源 /api 反向代理，聊天接口关闭代理响应缓冲。跨域部署 VITE_API_BASE_URL 需要后端配置 CORS。
 
-真实聊天可以开始验证；审批回复的历史保存和有消息会话的删除仍需要后端改进。
+## 当前范围
+
+没有文件删除、移动、上传或本地项目目录导入。文件草稿仅在页面内存中保留，关闭 / 刷新有浏览器离开提示；尚无跨刷新草稿恢复。UTF-8 BOM、常规 CRLF/LF 保留；Monaco 统一同一文件内混合行尾。
+
+外部进程修改通过刷新 / 保存冲突发现，尚无独立文件监听。命令返回事件触发重查，不代表命令成功。停止接收不保证停止服务端。后端已保存审批恢复后的回复，但未提供刷新后恢复待审批卡片的接口。
+
+“体验演示”不请求文件接口、模型或执行命令，文件面板明确要求连接真实服务。
