@@ -11,3 +11,4 @@ class CodelinState(MessagesState):
     """
     workspace: str
     approval_decision: str | None = None
+    session_id: str

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from pgvector.sqlalchemy import Vector
 
 
 def utcnow() -> datetime:
@@ -40,7 +41,7 @@ class Message(Base):
     __tablename__ = "messages"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.id"), index=True)
-    role: Mapped[str] = mapped_column(String(16))          # user | assistant
+    role: Mapped[str] = mapped_column(String(16))  # user | assistant
     content: Mapped[Text] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -50,9 +51,21 @@ class ToolInvocation(Base):
     __tablename__ = "tool_invocations"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.id"), index=True)
-    call_id: Mapped[str] = mapped_column(String(64), index=True)   # LLM 的 tool_call id
+    call_id: Mapped[str] = mapped_column(String(64), index=True)  # LLM 的 tool_call id
     tool: Mapped[str] = mapped_column(String(32))
     args: Mapped[dict] = mapped_column(JSON)
     ok: Mapped[bool] = mapped_column(Boolean)
     duration_ms: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CodeChunk(Base):
+    """代码块向量库：一个会话（工作区）一套数据，session_id 隔离。"""
+    __tablename__ = "code_chunks"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(32), index=True)
+    path: Mapped[str] = mapped_column(String(512))
+    start_line: Mapped[int] = mapped_column(Integer)
+    end_line: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    embedding = mapped_column(Vector(1024))  # bge-m3 输出 1024 维

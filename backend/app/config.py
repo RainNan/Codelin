@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     doubao_embedding_base_url: str = ""
 
     # --- infra 基础设施 ---
-    database_url: str = "postgresql+psycopg://codelin:codelin@localhost:5432/codelin"
-    checkpoint_db_url: str = "postgresql://codelin:codelin@localhost:5432/codelin"
+    database_url: str = "postgresql+psycopg://codelin:codelin123@localhost:5432/codelin"
+    checkpoint_db_url: str = "postgresql://codelin:codelin123@localhost:5432/codelin"
     redis_url: str = "redis://localhost:6379/0"
     jwt_secret: str = "dev-secret-change-me"
     jwt_expire_minutes: int = 60 * 24 * 7

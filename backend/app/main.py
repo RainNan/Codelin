@@ -19,10 +19,14 @@ from app.config import settings
 from app.db.models import ChatSession, Message, ToolInvocation, User
 from app.db.models import Base
 from app.db.session import engine, get_db
+from sqlalchemy import text
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    with engine.begin() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
     # 1) 业务表（开发期 create_all；生产应使用 Alembic 迁移——面试点）
     await asyncio.to_thread(Base.metadata.create_all, engine)
     # 2) LangGraph Checkpoint 换 PostgreSQL：进程重启会话不丢
@@ -51,9 +55,9 @@ class ApproveIn(BaseModel):
 
 @app.post("/api/chat")
 async def chat(
-    body: ChatIn,
-    user: User = Depends(current_user),
-    db: Session = Depends(get_db),
+        body: ChatIn,
+        user: User = Depends(current_user),
+        db: Session = Depends(get_db),
 ):
     check_rate_limit(user.id)
     s = db.get(ChatSession, body.session_id)

@@ -13,6 +13,7 @@ async def sse_events(
         thread_id: str,
         workspace: str,
         user_message: str | None,
+        session_id:str,
         *,
         resume: Command | None = None,
 ) -> AsyncGenerator[str, None]:

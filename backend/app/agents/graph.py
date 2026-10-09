@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from app.agents.prompts import SYSTEM_PROMPT
 from app.agents.state import CodelinState
 from app.llm.provider import get_llm
+from app.rag.service import index_workspace, hybrid_search
 from app.tools import ops
 from app.tools.definitions import TOOL_LIST
 from langgraph.types import Command, interrupt
@@ -23,6 +24,8 @@ OPS_REGISTRY: dict[str, object] = {
     "read_file": lambda ws, a: ops.read_file(ws, a["path"]),
     "write_file": lambda ws, a: ops.write_file(ws, a["path"], a["content"]),
     "grep": lambda ws, a: ops.grep(ws, a["pattern"], a.get("glob", "*")),
+    "index_codebase": lambda ws, a, sid: index_workspace(sid, ws),
+    "search_code": lambda ws, a, sid: hybrid_search(sid, a["query"])
 }
 
 
@@ -38,7 +41,10 @@ async def execute_node(state: CodelinState) -> dict:
     last: AIMessage = state["messages"][-1]
     ws = Path(state["workspace"])
     rejected = state.get("approval_decision") == "rejected"
+    sid = state.get("session_id")
+
     results: list[ToolMessage] = []
+
     for call in last.tool_calls:
         name, args = call["name"], dict(call["args"])
         if (rejected and name == "run_command"
@@ -94,6 +100,7 @@ def route_after_agent(state: CodelinState) -> str:
     )
     return "approve" if has_dangerous else "execute"
 
+
 def build_graph(checkpointer=None):
     g = StateGraph(CodelinState)
     g.add_node("agent", agent_node)
@@ -103,7 +110,7 @@ def build_graph(checkpointer=None):
     g.add_conditional_edges("agent", route_after_agent,
                             {"approve": "approve", "execute": "execute", END: END})
     g.add_edge("approve", "execute")
-    g.add_edge("execute", "agent")   # execute 完成后清空审批标记再回 agent
+    g.add_edge("execute", "agent")  # execute 完成后清空审批标记再回 agent
     return g.compile(checkpointer=checkpointer)
 
 
