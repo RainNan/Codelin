@@ -2,33 +2,28 @@
 import json
 import asyncio
 from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import AsyncGenerator
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.agents import graph as graph_mod
 from app.agents.runner import resume_events, sse_events
-from app.api import auth, sessions
+from app.api import auth, sessions, workspaces, files
+from app.api.workspaces import owned_workspace
+from app.db.migrate import upgrade_database
+from app.files.service import FileError
 from app.api.auth import current_user
 from app.api.ratelimit import check_rate_limit
 from app.config import settings
-from app.db.models import ChatSession, Message, ToolInvocation, User
-from app.db.models import Base
-from app.db.session import engine, get_db
-from sqlalchemy import text
+from app.db.models import ChatSession, Message, User
+from app.db.session import get_db
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    with engine.begin() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-
-    # 1) 业务表（开发期 create_all；生产应使用 Alembic 迁移——面试点）
-    await asyncio.to_thread(Base.metadata.create_all, engine)
+    await asyncio.to_thread(upgrade_database)
     # 2) LangGraph Checkpoint 换 PostgreSQL：进程重启会话不丢
     from app.agents.checkpoints import ThreadedPostgresSaver
     async with ThreadedPostgresSaver.open(settings.checkpoint_db_url) as cp:
@@ -41,6 +36,25 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Codelin", version="0.5.0", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(sessions.router)
+app.include_router(workspaces.router)
+app.include_router(files.router)
+
+
+@app.exception_handler(FileError)
+async def file_error_handler(request, error: FileError):
+    return JSONResponse(status_code=error.status, content={"detail": str(error)})
+
+
+async def persisted_stream(events, sid: str, db: Session):
+    """Persist normal and resumed assistant text using the same SSE wrapper."""
+    final_text = []
+    async for event in events:
+        if event.startswith("event: token"):
+            final_text.append(json.loads(event.split("data: ", 1)[1])["content"])
+        yield event
+    if final_text:
+        db.add(Message(session_id=sid, role="assistant", content="".join(final_text)))
+        db.commit()
 
 
 class ChatIn(BaseModel):
@@ -63,22 +77,12 @@ async def chat(
     s = db.get(ChatSession, body.session_id)
     if not s or s.user_id != user.id:
         raise HTTPException(404, "会话不存在")
+    workspace = owned_workspace(db, user.id, s.workspace_id)
     db.add(Message(session_id=s.id, role="user", content=body.message))
     db.commit()
 
-    async def stream():
-        final_text: list[str] = []
-        async for ev in sse_events(
-                s.id, s.workspace_path, body.message, session_id=s.id,
-        ):
-            if ev.startswith('event: token'):
-                final_text.append(json.loads(ev.split("data: ", 1)[1])["content"])
-            yield ev
-        db.add(Message(session_id=s.id, role="assistant",
-                       content="".join(final_text)))
-        db.commit()
-
-    return StreamingResponse(stream(), media_type="text/event-stream",
+    events = sse_events(s.id, workspace.root_path, body.message, session_id=s.id, workspace_id=workspace.id)
+    return StreamingResponse(persisted_stream(events, s.id, db), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
 
@@ -89,7 +93,9 @@ async def approve(body: ApproveIn, user: User = Depends(current_user),
     s = db.get(ChatSession, body.session_id)
     if not s or s.user_id != user.id:
         raise HTTPException(404)
-    return StreamingResponse(resume_events(body.session_id, body.approved),
+    workspace = owned_workspace(db, user.id, s.workspace_id)
+    events = resume_events(body.session_id, body.approved, workspace_id=workspace.id)
+    return StreamingResponse(persisted_stream(events, s.id, db),
                              media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})

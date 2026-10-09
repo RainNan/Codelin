@@ -1,5 +1,6 @@
 """Codelin 核心：LangGraph ReAct 执行图。"""
 import time
+import asyncio
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -44,6 +45,7 @@ async def execute_node(state: CodelinState) -> dict:
     sid = state.get("session_id")
 
     results: list[ToolMessage] = []
+    changes: list[dict] = []
 
     for call in last.tool_calls:
         name, args = call["name"], dict(call["args"])
@@ -56,8 +58,16 @@ async def execute_node(state: CodelinState) -> dict:
         try:
             if name == "run_command":
                 obs = await ops.run_command(ws, args["command"])
+                changes.append({"event": "workspace_changed", "workspace_id": state.get("workspace_id")})
+            elif name == "write_file":
+                result = await asyncio.to_thread(ops.write_file_result, ws, args["path"], args["content"], args.get("expected_version"))
+                obs = result["summary"]
+                changes.append({"event": "file_changed", "workspace_id": state.get("workspace_id"),
+                                "path": result["path"], "operation": result["operation"], "version": result["version"]})
+            elif name in ("index_codebase", "search_code"):
+                obs = await asyncio.to_thread(OPS_REGISTRY[name], ws, args, sid)
             elif name in OPS_REGISTRY:
-                obs = OPS_REGISTRY[name](ws, args)
+                obs = await asyncio.to_thread(OPS_REGISTRY[name], ws, args)
             else:
                 obs = f"未知工具: {name}"
             ok = True
@@ -67,7 +77,7 @@ async def execute_node(state: CodelinState) -> dict:
         results.append(
             ToolMessage(content=str(obs), tool_call_id=call["id"], name=name)
         )
-    return {"messages": results, "approval_decision": None}
+    return {"messages": results, "approval_decision": None, "file_changes": changes}
 
 
 async def approve_node(state: CodelinState) -> dict:

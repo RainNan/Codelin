@@ -1,8 +1,15 @@
 """集中式配置：所有环境变量和密钥只在这里出现一次。"""
 from pydantic_settings import BaseSettings
+from pathlib import Path
 
 
 class Settings(BaseSettings):
+    # Stable absolute roots, independent of the server's current directory.
+    workspace_root: str = str(Path(__file__).resolve().parents[1] / "workspaces")
+    file_lock_root: str = str(Path(__file__).resolve().parents[1] / ".file-locks")
+    max_file_bytes: int = 2 * 1024 * 1024
+    file_lock_timeout: float = 10.0
+
     # --- 模型 ---
     model_provider: str = "doubao"            # doubao | deepseek | qwen | gpt
     doubao_model: str = ""

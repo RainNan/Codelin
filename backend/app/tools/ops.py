@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from app.tools.security import ToolError, resolve_safe_path
+from app.files import service as files
 
 MAX_READ_CHARS = 30_000      # 防止把超长文件塞爆上下文
 MAX_OUTPUT_CHARS = 8_000     # 命令输出截断
@@ -29,23 +30,15 @@ def is_dangerous(command: str) -> bool:
 
 
 def list_dir(workspace: Path, rel_path: str = ".") -> str:
-    root = resolve_safe_path(workspace, rel_path)
-    if not root.is_dir():
-        raise ToolError(f"不是目录: {rel_path}")
-    entries = sorted(
-        ((e.name, "dir" if e.is_dir() else "file") for e in root.iterdir()),
-        key=lambda x: (x[1] != "dir", x[0].lower()),  # 目录在前
-    )
+    listing = files.list_directory(workspace, rel_path, limit=500)
+    entries = [(entry["name"], "dir" if entry["type"] == "directory" else "file") for entry in listing["entries"]]
     if not entries:
         return "(空目录)"
     return "\n".join(f"{'[目录]' if t == 'dir' else '[文件]'} {n}" for n, t in entries)
 
 
 def read_file(workspace: Path, rel_path: str) -> str:
-    target = resolve_safe_path(workspace, rel_path)
-    if not target.is_file():
-        raise ToolError(f"文件不存在: {rel_path}")
-    text = target.read_text(encoding="utf-8", errors="replace")
+    text = files.read_text(workspace, rel_path)["content"]
     if len(text) > MAX_READ_CHARS:
         text = text[:MAX_READ_CHARS] + f"\n...(截断，全文 {len(text)} 字符)"
     # 带行号输出：LLM 精确定位 + 前端可展示行号（Claude Code 同款体验）
@@ -54,13 +47,15 @@ def read_file(workspace: Path, rel_path: str) -> str:
     )
 
 
-def write_file(workspace: Path, rel_path: str, content: str) -> str:
-    target = resolve_safe_path(workspace, rel_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    existed = target.exists()
-    target.write_text(content, encoding="utf-8")
-    action = "覆写" if existed else "创建"
-    return f"已{action} {rel_path}（{len(content)} 字符，{content.count(chr(10)) + 1} 行）"
+def write_file_result(workspace: Path, rel_path: str, content: str, expected_version: str | None = None) -> dict:
+    result = files.write_text(workspace, rel_path, content, expected_version=expected_version, create_parents=True)
+    action = "覆写" if result["operation"] == "updated" else "创建"
+    result["summary"] = f"已{action} {rel_path}（{len(content)} 字符，{content.count(chr(10)) + 1} 行）"
+    return result
+
+
+def write_file(workspace: Path, rel_path: str, content: str, expected_version: str | None = None) -> str:
+    return write_file_result(workspace, rel_path, content, expected_version)["summary"]
 
 
 def grep(
@@ -74,6 +69,7 @@ def grep(
         if not p.is_file() or any(part.startswith(".") for part in p.parts):
             continue  # 跳过隐藏目录（.git/.venv）
         try:
+            p = resolve_safe_path(root, p.relative_to(root).as_posix())
             for i, line in enumerate(
                 p.read_text(encoding="utf-8", errors="ignore").splitlines(), 1
             ):
@@ -82,7 +78,7 @@ def grep(
                     hits.append(f"{rel}:{i}: {line.strip()[:200]}")
                     if len(hits) >= 50:
                         return "\n".join(hits) + "\n...(结果截断至 50 条)"
-        except (PermissionError, OSError):
+        except (ToolError, PermissionError, OSError):
             continue
     return "\n".join(hits) if hits else "(无匹配)"
 

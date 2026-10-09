@@ -3,7 +3,8 @@
 核心思想：把 LLM 给的任意 path 解析到工作区内部，逃逸一律拒绝。
 这是防"路径穿越攻击"（../../etc/passwd）的标准做法。
 """
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import re
 
 from fastapi import HTTPException
 
@@ -19,7 +20,17 @@ def resolve_safe_path(workspace: Path, rel_path: str) -> Path:
     所以 "../secrets"、"/etc/passwd"、"a/../../b" 这类都会被拦截。
     """
     root = workspace.resolve()
-    target = (root / rel_path).resolve()
+    windows = PureWindowsPath(rel_path)
+    normalized = rel_path.replace("\\", "/")
+    parts = normalized.split("/")
+    if (Path(normalized).is_absolute() or windows.drive or windows.root
+            or ".." in parts or re.search(r'[<>:"|?*\x00-\x1f]', normalized)
+            or any(part not in ("", ".") and (
+                part.endswith((" ", "."))
+                or re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", part)
+            ) for part in parts)):
+        raise ToolError(f"路径越界或名称无效: {rel_path}")
+    target = (root / normalized).resolve()
     if not target.is_relative_to(root):
         raise ToolError(f"路径越界（禁止访问工作区之外）: {rel_path}")
     return target

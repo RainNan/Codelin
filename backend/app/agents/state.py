@@ -1,4 +1,5 @@
 from langgraph.graph import MessagesState
+from typing import NotRequired
 
 
 class CodelinState(MessagesState):
@@ -12,3 +13,5 @@ class CodelinState(MessagesState):
     workspace: str
     approval_decision: str | None = None
     session_id: str
+    workspace_id: NotRequired[str]
+    file_changes: NotRequired[list[dict]]
