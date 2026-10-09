@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -6,13 +6,14 @@ from app.api.auth import current_user
 from app.api.workspaces import create_owned_workspace, owned_workspace
 from app.db.models import ChatSession, CodeChunk, Message, ToolInvocation, User, new_id
 from app.db.session import get_db
+from app.llm.titles import DEFAULT_TITLE
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 class SessionIn(BaseModel):
     workspace_id: str | None = Field(default=None, min_length=1, max_length=32)
-    title: str = Field(default="新会话", min_length=1, max_length=128)
+    title: str = Field(default=DEFAULT_TITLE, min_length=1, max_length=128)
 
 
 def session_view(session):
@@ -38,6 +39,15 @@ def create_session(body: SessionIn | None = None, user: User = Depends(current_u
     session = ChatSession(id=new_id(), user_id=user.id, title=title, workspace_id=workspace.id, workspace_path=workspace.root_path)
     db.add(session)
     db.commit()
+    return session_view(session)
+
+
+@router.get("/{sid}")
+def get_session(sid: str, response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    session = db.query(ChatSession).filter_by(id=sid, user_id=user.id).first()
+    if not session:
+        raise HTTPException(404, "会话不存在")
+    response.headers["Cache-Control"] = "no-store"
     return session_view(session)
 
 

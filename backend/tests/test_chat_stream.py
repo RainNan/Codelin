@@ -41,7 +41,16 @@ def endpoint(modules, monkeypatch):
             self.messages = []
 
         def get(self, model, sid):
-            return SimpleNamespace(id=sid, user_id="user-1", workspace_id="workspace-1", workspace_path="test-workspace")
+            return SimpleNamespace(id=sid, user_id="user-1", title="自定义标题", workspace_id="workspace-1", workspace_path="test-workspace")
+
+        def query(self, model):
+            return self
+
+        def filter_by(self, **kwargs):
+            return self
+
+        def first(self):
+            return None
 
         def add(self, message):
             self.messages.append(message)

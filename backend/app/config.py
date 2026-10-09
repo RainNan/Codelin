@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     gpt_api_key: str = ""
     temperature: float = 0.2                    # 编程任务要低温度，稳
+    title_timeout_seconds: float = 15.0
 
     # --- Embedding（M6 用） ---
     doubao_embedding_model: str = ""

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.agents import graph as graph_mod
 from app.agents.runner import resume_events, sse_events
@@ -19,6 +19,7 @@ from app.api.ratelimit import check_rate_limit
 from app.config import settings
 from app.db.models import ChatSession, Message, User
 from app.db.session import get_db
+from app.llm.titles import DEFAULT_TITLE, start_title_task, stop_title_tasks
 
 
 @asynccontextmanager
@@ -29,7 +30,10 @@ async def lifespan(app: FastAPI):
     async with ThreadedPostgresSaver.open(settings.checkpoint_db_url) as cp:
         await asyncio.to_thread(cp.setup)  # 首次自动建 checkpoints 相关表
         graph_mod.graph = graph_mod.build_graph(cp)
-        yield
+        try:
+            yield
+        finally:
+            await stop_title_tasks()
     # 退出时自动清理 checkpoint 连接
 
 
@@ -45,9 +49,11 @@ async def file_error_handler(request, error: FileError):
     return JSONResponse(status_code=error.status, content={"detail": str(error)})
 
 
-async def persisted_stream(events, sid: str, db: Session):
+async def persisted_stream(events, sid: str, db: Session, title_pending: bool = False):
     """Persist normal and resumed assistant text using the same SSE wrapper."""
     final_text = []
+    if title_pending:
+        yield 'event: session_title_pending\ndata: ' + json.dumps({"session_id": sid, "title": DEFAULT_TITLE}) + '\n\n'
     async for event in events:
         if event.startswith("event: token"):
             final_text.append(json.loads(event.split("data: ", 1)[1])["content"])
@@ -78,11 +84,18 @@ async def chat(
     if not s or s.user_id != user.id:
         raise HTTPException(404, "会话不存在")
     workspace = owned_workspace(db, user.id, s.workspace_id)
-    db.add(Message(session_id=s.id, role="user", content=body.message))
+    first_message = db.query(Message.id).filter_by(session_id=s.id, role="user").first() is None
+    title_pending = first_message and s.title == DEFAULT_TITLE and bool(body.message.strip())
+    message = Message(session_id=s.id, role="user", content=body.message)
+    db.add(message)
     db.commit()
+    if title_pending:
+        # Never hand the request-scoped Session to an asynchronous background task.
+        factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+        start_title_task(factory, s.id, user.id, message.id, body.message)
 
     events = sse_events(s.id, workspace.root_path, body.message, session_id=s.id, workspace_id=workspace.id)
-    return StreamingResponse(persisted_stream(events, s.id, db), media_type="text/event-stream",
+    return StreamingResponse(persisted_stream(events, s.id, db, title_pending), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache",
                                       "X-Accel-Buffering": "no"})
 
