@@ -10,7 +10,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 
 def get_db() -> Generator[Session, None, None]:
-    """FastAPI 依赖：请求级会话，用完即还。"""
+    """每一个请求都生成一个sqlalchemy数据库会话，用完自动释放"""
     db = SessionLocal()
     try:
         yield db

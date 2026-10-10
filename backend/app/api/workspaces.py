@@ -42,18 +42,23 @@ def create_owned_workspace(db: Session, user_id: str, name: str) -> Workspace:
 
 
 @router.get("")
-def list_workspaces(user: User = Depends(current_user), db: Session = Depends(get_db)):
+def list_workspaces(user: User = Depends(current_user),
+                    db: Session = Depends(get_db)):
     rows = db.query(Workspace).filter_by(user_id=user.id).order_by(Workspace.created_at.desc(), Workspace.id).all()
     return [workspace_view(workspace) for workspace in rows]
 
 
 @router.post("", status_code=201)
-def create_workspace(body: WorkspaceIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+def create_workspace(body: WorkspaceIn,
+                     user: User = Depends(current_user),
+                     db: Session = Depends(get_db)):
     workspace = create_owned_workspace(db, user.id, body.name)
     db.commit()
     return workspace_view(workspace)
 
 
 @router.get("/{wid}")
-def get_workspace(wid: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+def get_workspace(wid: str,
+                  user: User = Depends(current_user),
+                  db: Session = Depends(get_db)):
     return workspace_view(owned_workspace(db, user.id, wid))

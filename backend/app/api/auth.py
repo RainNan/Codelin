@@ -1,5 +1,4 @@
-"""JWT 注册/登录。为控制篇幅用同步 DB（FastAPI 自动放线程池）；
-高并发场景可换 AsyncSession——面试时主动提这个 trade-off。"""
+"""JWT 注册/登录"""
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException

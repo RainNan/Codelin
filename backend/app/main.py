@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     # 退出时自动清理 checkpoint 连接
 
 
-app = FastAPI(title="Codelin", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="Codelin", version="0.1.0", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(sessions.router)
 app.include_router(workspaces.router)
@@ -49,28 +49,63 @@ async def file_error_handler(request, error: FileError):
     return JSONResponse(status_code=error.status, content={"detail": str(error)})
 
 
-async def persisted_stream(events, sid: str, db: Session, title_pending: bool = False):
-    """Persist normal and resumed assistant text using the same SSE wrapper."""
+async def persisted_stream(
+        events,
+        sid: str,
+        db: Session,
+        title_pending: bool = False,
+):
+    """
+    包装 SSE 事件流，结束后将收集到的文本保存到消息表。
+
+    参数：
+        events:
+            上游异步事件流，每次产生一个已经格式化好的 SSE 字符串。
+            其中可能包含 token、工具调用、审批提示、完成或错误事件。
+        sid:
+            当前聊天会话的 ID，用于关联保存的助手消息。
+        db:
+            本次请求使用的数据库 Session。
+        title_pending:
+            通知前端标题正在后台生成，可用于前端显示
+    """
     final_text = []
+
     if title_pending:
-        yield 'event: session_title_pending\ndata: ' + json.dumps({"session_id": sid, "title": DEFAULT_TITLE}) + '\n\n'
+        yield (
+                "event: session_title_pending\ndata: "
+                + json.dumps({
+            "session_id": sid,
+            "title": DEFAULT_TITLE,
+        })
+                + "\n\n"
+        )
+
     async for event in events:
         if event.startswith("event: token"):
-            final_text.append(json.loads(event.split("data: ", 1)[1])["content"])
+            # 示例：
+            # event: token
+            # data: {"content": "你好"}
+            final_text.append(
+                json.loads(event.split("data: ", 1)[1])["content"]
+            )
+
         yield event
+
     if final_text:
-        db.add(Message(session_id=sid, role="assistant", content="".join(final_text)))
+        db.add(
+            Message(
+                session_id=sid,
+                role="assistant",
+                content="".join(final_text),
+            )
+        )
         db.commit()
 
 
 class ChatIn(BaseModel):
     session_id: str
     message: str
-
-
-class ApproveIn(BaseModel):
-    session_id: str
-    approved: bool
 
 
 @app.post("/api/chat")
@@ -85,7 +120,14 @@ async def chat(
         raise HTTPException(404, "会话不存在")
     workspace = owned_workspace(db, user.id, s.workspace_id)
     first_message = db.query(Message.id).filter_by(session_id=s.id, role="user").first() is None
-    title_pending = first_message and s.title == DEFAULT_TITLE and bool(body.message.strip())
+
+    # 是否需要生成对话标题（默认第一次对话生成）
+    title_pending = (
+            first_message
+            and s.title == DEFAULT_TITLE
+            and bool(body.message.strip())
+    )
+
     message = Message(session_id=s.id, role="user", content=body.message)
     db.add(message)
     db.commit()
@@ -95,28 +137,48 @@ async def chat(
         start_title_task(factory, s.id, user.id, message.id, body.message)
 
     events = sse_events(s.id, workspace.root_path, body.message, session_id=s.id, workspace_id=workspace.id)
-    return StreamingResponse(persisted_stream(events, s.id, db, title_pending), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache",
-                                      "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        persisted_stream(events, s.id, db, title_pending),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+class ApproveIn(BaseModel):
+    session_id: str
+    approved: bool
 
 
 @app.post("/api/chat/approve")
-async def approve(body: ApproveIn, user: User = Depends(current_user),
-                  db: Session = Depends(get_db)):
+async def approve(
+        body: ApproveIn,
+        user: User = Depends(current_user),
+        db: Session = Depends(get_db)
+):
     s = db.get(ChatSession, body.session_id)
     if not s or s.user_id != user.id:
         raise HTTPException(404)
     workspace = owned_workspace(db, user.id, s.workspace_id)
     events = resume_events(body.session_id, body.approved, workspace_id=workspace.id)
-    return StreamingResponse(persisted_stream(events, s.id, db),
-                             media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache",
-                                      "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        persisted_stream(events, s.id, db),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 @app.get("/api/sessions/{sid}/messages")
-def get_messages(sid: str, user: User = Depends(current_user),
-                 db: Session = Depends(get_db)):
+def get_messages(
+        sid: str,
+        user: User = Depends(current_user),
+        db: Session = Depends(get_db)
+):
     s = db.get(ChatSession, sid)
     if not s or s.user_id != user.id:
         raise HTTPException(404)

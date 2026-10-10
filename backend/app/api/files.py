@@ -30,16 +30,23 @@ def root_for(db, user, wid):
 
 
 @router.get("/files")
-def list_files(wid: str, response: Response, path: str = Query(default=".", max_length=1024),
-               offset: int = Query(default=0, ge=0), limit: int = Query(default=200, ge=1, le=500),
-               user: User = Depends(current_user), db: Session = Depends(get_db)):
+def list_files(wid: str,
+               response: Response,
+               path: str = Query(default=".", max_length=1024),
+               offset: int = Query(default=0, ge=0),
+               limit: int = Query(default=200, ge=1, le=500),
+               user: User = Depends(current_user),
+               db: Session = Depends(get_db)):
     response.headers["Cache-Control"] = "no-store"
     return service.list_directory(root_for(db, user, wid), path, offset, limit)
 
 
 @router.get("/file")
-def get_file(wid: str, response: Response, path: str = Query(min_length=1, max_length=1024),
-             user: User = Depends(current_user), db: Session = Depends(get_db)):
+def get_file(wid: str,
+             response: Response,
+             path: str = Query(min_length=1, max_length=1024),
+             user: User = Depends(current_user),
+             db: Session = Depends(get_db)):
     data = service.read_text(root_for(db, user, wid), path)
     response.headers["ETag"] = f'"{data["version"]}"'
     response.headers["Cache-Control"] = "no-store"
@@ -47,8 +54,11 @@ def get_file(wid: str, response: Response, path: str = Query(min_length=1, max_l
 
 
 @router.put("/file")
-def save_file(wid: str, body: SaveIn, response: Response,
-              user: User = Depends(current_user), db: Session = Depends(get_db)):
+def save_file(
+        wid: str, body: SaveIn, response: Response,
+        user: User = Depends(current_user),
+        db: Session = Depends(get_db)
+):
     data = service.write_text(root_for(db, user, wid), body.path, body.content, expected_version=body.version)
     response.headers["ETag"] = f'"{data["version"]}"'
     response.headers["Cache-Control"] = "no-store"

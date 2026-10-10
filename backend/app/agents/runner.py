@@ -86,7 +86,13 @@ async def sse_events(
     except Exception as e:
         yield sse("error", {"message": f"{type(e).__name__}: {e}"})
 
-async def resume_events(thread_id: str, approved: bool, *, workspace_id: str | None = None) -> AsyncGenerator[str, None]:
+
+async def resume_events(
+        thread_id: str,
+        approved: bool,
+        *,
+        workspace_id: str | None = None
+) -> AsyncGenerator[str, None]:
     """用户点击批准/拒绝后，从断点恢复图执行。"""
     cmd = Command(resume="approved" if approved else "rejected")
     async for ev in sse_events(

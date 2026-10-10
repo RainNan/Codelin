@@ -1,3 +1,4 @@
+""""""
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -21,7 +22,9 @@ def session_view(session):
 
 
 @router.get("")
-def list_sessions(workspace_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
+def list_sessions(workspace_id: str | None = None,
+                  user: User = Depends(current_user),
+                  db: Session = Depends(get_db)):
     query = db.query(ChatSession).filter_by(user_id=user.id)
     if workspace_id:
         owned_workspace(db, user.id, workspace_id)
@@ -30,7 +33,9 @@ def list_sessions(workspace_id: str | None = None, user: User = Depends(current_
 
 
 @router.post("")
-def create_session(body: SessionIn | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
+def create_session(body: SessionIn | None = None,
+                   user: User = Depends(current_user),
+                   db: Session = Depends(get_db)):
     body = body or SessionIn()
     title = body.title.strip()
     if not title:
@@ -43,7 +48,10 @@ def create_session(body: SessionIn | None = None, user: User = Depends(current_u
 
 
 @router.get("/{sid}")
-def get_session(sid: str, response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):
+def get_session(sid: str,
+                response: Response,
+                user: User = Depends(current_user),
+                db: Session = Depends(get_db)):
     session = db.query(ChatSession).filter_by(id=sid, user_id=user.id).first()
     if not session:
         raise HTTPException(404, "会话不存在")

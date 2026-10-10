@@ -1,21 +1,23 @@
-[project]
+[
+project
+]
 name = "codelin-backend"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",        # ASGI 服务器，standard 含 websockets/httptools
-    "pydantic>=2.7",                   # 数据校验，FastAPI 的地基
-    "pydantic-settings>=2.3",          # .env 配置管理
-    "langchain>=1.0",                  # 模型/消息/工具抽象层
-    "langchain-openai>=1.0",           # OpenAI 兼容客户端（DeepSeek/Qwen 都走它）
-    "langgraph>=1.0",                  # M3 的主角，现在先装上
-    "sqlalchemy>=2.0",
-    "psycopg[binary]>=3.2",            # PostgreSQL 驱动（异步 + 同步都支持）
-    "langgraph-checkpoint-postgres>=2.0",  # LangGraph 状态快照存 Postgres
+    "uvicorn[standard]>=0.30", # ASGI 服务器，standard 含 websockets/httptools
+    "pydantic>=2.7", # 数据校验
+    "pydantic-settings>=2.3", # .env 配置管理
+    "langchain>=1.0",
+    "langchain-openai>=1.0",
+    "langgraph>=1.0",
+    "sqlalchemy>=2.0", # SQLAlchemy 关系型数据库
+    "psycopg[binary]>=3.2", # PostgreSQL 驱动
+    "langgraph-checkpoint-postgres>=2.0", # LangGraph 状态快照存 Postgres
     "redis>=5.0",
-    "python-jose[cryptography]>=3.3",  # JWT
-    "passlib[bcrypt]>=1.7",            # 密码哈希
+    "python-jose[cryptography]>=3.3", # JWT
+    "passlib[bcrypt]>=1.7", # 密码哈希
     "httpx>=0.27",
     "pgvector>=0.5.0",
     "bcrypt==4.3.0",

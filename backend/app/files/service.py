@@ -35,6 +35,7 @@ def io_errors(function):
             raise FileError(403, "没有权限访问该文件或目录") from error
         except OSError as error:
             raise FileError(500, "文件系统暂时无法完成操作") from error
+
     return wrapped
 
 
@@ -101,7 +102,11 @@ def _info(root: Path, target: Path) -> dict:
 def read_text(root: Path, path: str) -> dict:
     with file_lock(root, path) as target:
         data = _bytes(target)
-        return {**_info(root, target), "content": _decode(data), "version": version(data)}
+        return {
+            **_info(root, target),
+            "content": _decode(data),
+            "version": version(data)
+        }
 
 
 def _natural(name: str):
