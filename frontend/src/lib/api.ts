@@ -51,6 +51,15 @@ export const api = {
   async createWorkspace(token: string, name: string): Promise<Workspace> {
     return (await request('/workspaces', token, { method: 'POST', body: JSON.stringify({ name }) })).json()
   },
+  async updateSession(token: string, sid: string, patch: { title?: string; workspace_id?: string }): Promise<ChatSession> {
+    return (await request(`/sessions/${encodeURIComponent(sid)}`, token, { method: 'PATCH', body: JSON.stringify(patch) })).json()
+  },
+  async renameWorkspace(token: string, wid: string, name: string): Promise<Workspace> {
+    return (await request(`/workspaces/${encodeURIComponent(wid)}`, token, { method: 'PATCH', body: JSON.stringify({ name }) })).json()
+  },
+  async removeWorkspace(token: string, wid: string) {
+    await request(`/workspaces/${encodeURIComponent(wid)}`, token, { method: 'DELETE' })
+  },
   async directory(token: string, wid: string, path: string, offset = 0, signal?: AbortSignal): Promise<DirectoryPage> {
     return (await request(`/workspaces/${encodeURIComponent(wid)}/files?${new URLSearchParams({ path, offset: String(offset), limit: '200' })}`, token, { signal, cache: 'no-store' })).json()
   },

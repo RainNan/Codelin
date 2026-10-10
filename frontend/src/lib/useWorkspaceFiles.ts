@@ -23,9 +23,11 @@ export function useWorkspaceFiles(token: string | undefined, wid: string | undef
   const syncRequests = useRef(new Map<string, number>())
   const saveRequests = useRef(new Set<string>())
   const deferredChecks = useRef(new Set<string>())
+  const removedWorkspaces = useRef(new Set<string>())
   useEffect(() => {
     epoch.current++; setFiles([]); setActivePaths({}); setOpenError(''); setOpening('')
     openingRequests.current.clear(); saveRequests.current.clear(); syncRequests.current.clear(); deferredChecks.current.clear()
+    removedWorkspaces.current.clear()
   }, [token])
   useEffect(() => { setOpenError(''); setOpening('') }, [wid])
   const patch = useCallback((workspace: string, path: string, update: (file: OpenFile) => OpenFile) => {
@@ -45,7 +47,7 @@ export function useWorkspaceFiles(token: string | undefined, wid: string | undef
     openingRequests.current.add(key); setOpening(path)
     try {
       const file = await api.file(token, workspace, path)
-      if (epoch.current !== stamp) return
+      if (epoch.current !== stamp || removedWorkspaces.current.has(workspace)) return
       setFiles(prev => prev.some(item => item.wid === workspace && item.path === file.path) ? prev : [...prev, { ...file, wid: workspace, base: file.content, draft: file.content }])
       setActivePaths(prev => prev[workspace] === path ? { ...prev, [workspace]: file.path } : prev)
     } catch (e) { if (epoch.current === stamp && workspaceRef.current === workspace && pathsRef.current[workspace] === path) setOpenError(fail(e)) }
@@ -117,6 +119,13 @@ export function useWorkspaceFiles(token: string | undefined, wid: string | undef
       return { ...prev, [file.wid]: remaining.at(-1)?.path || '' }
     })
   }
+  function dropWorkspace(workspace: string) {
+    removedWorkspaces.current.add(workspace)
+    setFiles(prev => prev.filter(file => file.wid !== workspace))
+    setActivePaths(prev => { const next = { ...prev }; delete next[workspace]; return next })
+    if (workspaceRef.current === workspace) { setOpening(''); setOpenError('') }
+    setRevision(value => value + 1)
+  }
   function resolve(file: OpenFile, reload: boolean) {
     patch(file.wid, file.path, current => current.external ? {
       ...current, ...current.external, base: current.external.content,
@@ -133,7 +142,7 @@ export function useWorkspaceFiles(token: string | undefined, wid: string | undef
   }, [])
   const tabs = files.filter(file => file.wid === wid)
   const active = tabs.find(file => file.path === (wid ? activePaths[wid] : '')) || tabs.at(-1)
-  return { tabs, active, files, opening, openError, revision, open, save, close, resolve, patch, refresh, check,
+  return { tabs, active, files, opening, openError, revision, open, save, close, resolve, patch, refresh, check, dropWorkspace,
     activate: (path: string) => wid && setActivePaths(prev => ({ ...prev, [wid]: path })), retryOpen: () => wid && activePaths[wid] && open(activePaths[wid]) }
 }
 export type WorkspaceFiles = ReturnType<typeof useWorkspaceFiles>

@@ -1,5 +1,20 @@
 @import "tailwindcss";
 
+.workspace-group { margin-bottom: 10px; }
+.workspace-group-heading { display: flex; align-items: center; min-height: 38px; gap: 2px; }
+.workspace-group-name { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; text-align: left; font-size: 12px; }
+.workspace-group-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-group ul { margin-left: 8px; border-left: 1px solid var(--line); padding-left: 3px; }
+.conversation-actions { display: flex; flex-shrink: 0; opacity: 0; }
+.conversation-actions .icon-button, .workspace-group-heading > .icon-button { width: 26px; height: 30px; padding: 4px; }
+.session-row:hover .conversation-actions, .session-row:focus-within .conversation-actions, .workspace-group-heading:hover .conversation-actions, .workspace-group-heading:focus-within .conversation-actions { opacity: 1; }
+.group-empty { padding: 8px 12px 14px; font-size: 11px; line-height: 1.7; color: var(--muted); }
+.independent-heading { margin-top: 22px; }
+.session-nav .sidebar-section-label { align-items: center; margin-bottom: 6px; }
+.membership-bar { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); padding: 8px 20px; border-bottom: 1px solid var(--line); }
+.membership-bar button { margin-left: auto; font-size: 12px; }
+@media (hover: none) { .conversation-actions { opacity: 1; } }
+
 /* Workspace panels use the existing surface, spacing and color tokens. */
 .workbench-columns { width: 100%; height: 100%; }
 .navigation-panel .sidebar { display: flex; width: 100%; height: 100%; border: 0; padding-inline: 12px; }

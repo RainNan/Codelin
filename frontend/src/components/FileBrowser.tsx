@@ -73,7 +73,7 @@ export default function FileBrowser({ token, workspace, workspaces, files, busy,
     {demo ? <div className="file-empty"><Folder size={30} /><p>演示模式不提供文件。</p><span>连接真实服务后，可以浏览和编辑自己的工作区。</span></div> : <>
       <div className="workspace-picker"><label htmlFor="workspace-picker">当前工作区</label><select id="workspace-picker" value={wid || ''} disabled={busy || !workspaces.length} onChange={e => onSwitch(e.target.value)}><option value="" disabled>选择工作区</option>{workspaces.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
         <Button variant="ghost" onClick={() => startCreate('workspace')} disabled={busy}>创建工作空间</Button>
-        <p>{busy ? 'AI 处理期间可浏览文件；完成后可切换工作区。' : '切换工作区会同时切换关联会话。'}</p>
+        <p>{busy ? 'AI 处理期间可浏览文件；完成后可切换工作区。' : '此处只切换浏览的文件，不改变对话归属。'}</p>
       </div>
       {workspaceError && <div className="file-feedback" role="alert">{workspaceError}<Button onClick={onRetryWorkspaces}>重试工作区列表</Button></div>}
       {!workspace && !workspaceError && <div className="file-empty"><FolderPlus size={30} /><p>{workspaces.length ? '请选择一个工作区' : '还没有工作空间'}</p><span>创建后，文件与 AI 对话会共享同一个项目。</span><Button onClick={() => startCreate('workspace')} disabled={busy}>创建工作空间</Button></div>}
@@ -100,7 +100,7 @@ export default function FileBrowser({ token, workspace, workspaces, files, busy,
         <footer className="file-browser-footer"><span>{listing ? `${listing.total} 个项目` : '目录浏览'}</span><span>AI 始终在工作区根目录执行</span></footer>
       </>}
     </>}
-    <Modal open={creation !== null} onOpenChange={open => { if (!open && !creating) setCreation(null) }} title={creation === 'workspace' ? '创建工作空间' : creation === 'directory' ? '新建文件夹' : '新建文件'} description={creation === 'workspace' ? '为新项目命名，随后自动建立关联会话。' : `创建于 ${path === '.' ? '根目录' : path}。`}>
+    <Modal open={creation !== null} onOpenChange={open => { if (!open && !creating) setCreation(null) }} title={creation === 'workspace' ? '创建工作空间' : creation === 'directory' ? '新建文件夹' : '新建文件'} description={creation === 'workspace' ? '建立空工作区，不会自动创建对话。' : `创建于 ${path === '.' ? '根目录' : path}。`}>
       <form onSubmit={create}><label htmlFor="entry-name" className="field-label mt-5">名称</label><input className="input" id="entry-name" autoFocus required value={name} maxLength={creation === 'workspace' ? 128 : 255} aria-invalid={Boolean(creationError)} aria-describedby={creationError ? 'entry-error' : undefined} onChange={e => setName(e.target.value)} />{creationError && <p className="inline-error mt-3" id="entry-error" role="alert">{creationError}</p>}<div className="mt-6 flex justify-end gap-3"><Button onClick={() => setCreation(null)} disabled={creating}>取消</Button><Button type="submit" variant="primary" disabled={creating || !name.trim()}>{creating ? '正在创建…' : '创建'}</Button></div></form>
     </Modal>
   </aside>

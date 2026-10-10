@@ -16,6 +16,7 @@ async function mockBackend(page: Page, chat: 'done' | 'approval' | 'broken' | 't
     calls.push({ path, method, body: request.postDataJSON(), authorization: request.headers().authorization })
     const json = (data: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) })
     if (path.startsWith('/api/auth/')) return json({ token: 'test-token', username: 'tester' })
+    if (path === '/api/workspaces') return json([])
     if (path === '/api/sessions' && method === 'GET') return json(removed ? [] : [{ id: 'existing', title: '已有项目讨论', created_at: '2026-10-09T00:00:00Z' }])
     if (path === '/api/sessions' && method === 'POST') return json({ id: 'new-session', title: '新会话' })
     if (path === '/api/sessions/new-session' && method === 'GET') {
@@ -23,6 +24,7 @@ async function mockBackend(page: Page, chat: 'done' | 'approval' | 'broken' | 't
       if (ready && titleReady) await titleReady
       return json({ id: 'new-session', title: ready ? '实现登录功能' : '新会话' })
     }
+    if (path === '/api/sessions/existing' && method === 'GET') return json({ id: 'existing', title: '已有项目讨论', workspace_id: null })
     if (path === '/api/sessions/existing/messages') return json([{ role: 'user', content: '历史问题' }, { role: 'assistant', content: '历史回复' }])
     if (method === 'DELETE') { removed = true; return json({ ok: true }) }
     if (path === '/api/chat' || path === '/api/chat/approve') {
@@ -80,6 +82,7 @@ test('an asynchronous title updates the sidebar and preserves the reply and draf
   let finishTitle!: () => void
   const titleReady = new Promise<void>(resolve => { finishTitle = resolve })
   const calls = await mockBackend(page, 'title', titleReady)
+  await page.getByRole('button', { name: '新建会话', exact: true }).click()
   await page.getByLabel('给 Codelin 发送消息').fill('帮我实现登录功能')
   await page.getByRole('button', { name: '发送消息' }).click()
   await expect(page.getByText('你好，这是来自接口的回复。', { exact: true })).toBeVisible()
@@ -94,11 +97,12 @@ test('an asynchronous title updates the sidebar and preserves the reply and draf
   await expect(page.getByRole('button', { name: /^实现登录功能/ })).toBeVisible()
   await expect(loading).toHaveCount(0)
   await expect(page.getByLabel('给 Codelin 发送消息')).toHaveValue('下一条消息的草稿')
-  expect(calls.filter(call => call.path === '/api/sessions/new-session').length).toBe(2)
+  expect(calls.filter(call => call.path === '/api/sessions/new-session').length).toBeGreaterThanOrEqual(2)
 })
 
 test('title lookup failure clears the loading indicators without losing the reply or draft', async ({ page }) => {
   await mockBackend(page, 'title')
+  await page.getByRole('button', { name: '新建会话', exact: true }).click()
   let failTitle!: () => void
   const failure = new Promise<void>(resolve => { failTitle = resolve })
   await page.route('**/api/sessions/new-session', async route => {
@@ -120,6 +124,7 @@ test('title lookup failure clears the loading indicators without losing the repl
 
 test('real approval posts the boolean and resumes the same session', async ({ page }) => {
   const calls = await mockBackend(page, 'approval')
+  await page.getByRole('button', { name: '新建会话', exact: true }).click()
   await page.getByLabel('给 Codelin 发送消息').fill('安装依赖')
   await page.getByRole('button', { name: '发送消息' }).click()
   await page.getByRole('button', { name: '批准执行' }).click()

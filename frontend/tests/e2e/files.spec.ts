@@ -15,6 +15,7 @@ async function fixture(page: Page) {
     if (path.includes('/auth/')) return json({ token: 'files-token', username: 'file-tester' })
     if (path === '/api/workspaces') return json([{ id: 'w1', name: '项目一', created_at: '' }, { id: 'w2', name: '项目二', created_at: '' }, { id: 'w3', name: '新项目', created_at: '' }])
     if (path === '/api/sessions') return json(method === 'POST' ? { id: 's-new', title: '新会话', workspace_id: body?.workspace_id } : [{ id: 's1', title: '讨论项目一', workspace_id: 'w1' }, { id: 's2', title: '讨论项目二', workspace_id: 'w2' }])
+    if (path === '/api/sessions/s1') return json({ id: 's1', title: '讨论项目一', workspace_id: 'w1' })
     if (path.endsWith('/messages')) return json([])
     if (path.endsWith('/files')) {
       if (failList) return json({ detail: '目录访问失败' }, 403)
@@ -130,15 +131,18 @@ test('stream survives opening and hiding files, refreshes AI changes and retains
   await expect(page.getByText('已更新 main.ts。', { exact: true })).toBeVisible()
 })
 
-test('workspace switch preserves file and chat drafts and binds the matching session', async ({ page }) => {
+test('file browsing preserves chat association while sidebar navigation preserves drafts', async ({ page }) => {
   await page.setViewportSize({ width: 1600, height: 1000 })
   const state = await fixture(page)
   await page.getByRole('button', { name: '打开文件：main.ts', exact: true }).click()
   await edit(page, 'workspace one draft')
   await page.getByLabel('给 Codelin 发送消息').fill('聊天草稿一')
   await page.getByLabel('当前工作区').selectOption('w2')
+  await expect(page.getByLabel('给 Codelin 发送消息')).toHaveValue('聊天草稿一')
+  await expect(page.locator('.membership-bar')).toContainText('对话工作区：项目一')
+  await page.getByRole('button', { name: '项目二', exact: true }).click()
   await expect(page.getByLabel('给 Codelin 发送消息')).toHaveValue('')
-  await page.getByLabel('当前工作区').selectOption('w1')
+  await page.getByRole('button', { name: '项目一', exact: true }).click()
   await expect(page.getByLabel('给 Codelin 发送消息')).toHaveValue('聊天草稿一')
   await expect(page.getByLabel('未保存', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '将当前文件路径添加到对话' }).click()
@@ -185,7 +189,7 @@ test('dirty files preserve local edits on AI events and save-and-close completes
   expect(state.documents.get('main.ts')!.content).toBe('unsaved human change')
 })
 
-test('unsupported and disappeared files show errors, and a workspace without a session creates an association', async ({ page }) => {
+test('unsupported files show errors and selecting an empty workspace does not create a session', async ({ page }) => {
   await page.setViewportSize({ width: 1600, height: 1000 })
   const state = await fixture(page)
   state.documents.set('binary.png', { content: '', version: 'a'.repeat(64) })
@@ -197,6 +201,12 @@ test('unsupported and disappeared files show errors, and a workspace without a s
   await page.getByRole('button', { name: '打开文件：main.ts', exact: true }).click()
   await expect(page.locator('.file-editor')).toContainText('文件不存在')
   await page.getByLabel('当前工作区').selectOption('w3')
+  await expect(page.locator('.workspace-header')).toContainText('讨论项目一')
+  expect(state.bodies.filter(call => call.path === '/api/sessions' && call.body)).toHaveLength(0)
+  await page.getByRole('button', { name: '新项目', exact: true }).click()
+  await expect(page.locator('.membership-bar')).toContainText('尚未选择对话')
+  expect(state.bodies.filter(call => call.path === '/api/sessions' && call.body)).toHaveLength(0)
+  await page.getByRole('button', { name: '在此工作区新建对话' }).click()
   await expect(page.locator('.workspace-header')).toContainText('新会话')
   expect(state.bodies.find(call => call.path === '/api/sessions' && call.body)?.body).toEqual({ workspace_id: 'w3' })
 })

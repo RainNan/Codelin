@@ -37,17 +37,17 @@ export function Modal({ open, onOpenChange, title, description, children }: { op
   </Dialog.Portal></Dialog.Root>
 }
 
-export function DeleteDialog({ title, open, onOpenChange, onDelete, busy, error }: { title: string; open: boolean; onOpenChange: (open: boolean) => void; onDelete: () => void; busy: boolean; error: string }) {
+export function DeleteDialog({ title, open, onOpenChange, onDelete, busy, error, workspace = false, description }: { title: string; open: boolean; onOpenChange: (open: boolean) => void; onDelete: () => void; busy: boolean; error: string; workspace?: boolean; description?: string }) {
   const restoreFocus = useRestoreFocus(open)
   return <AlertDialog.Root open={open} onOpenChange={value => { if (!busy) onOpenChange(value) }}><AlertDialog.Portal>
     <AlertDialog.Overlay className="modal-overlay" />
     <AlertDialog.Content className="modal-content" onCloseAutoFocus={restoreFocus}>
-      <AlertDialog.Title className="text-xl font-semibold text-balance">删除这个会话？</AlertDialog.Title>
-      <AlertDialog.Description className="mt-3 text-sm text-muted text-pretty">“{title}”将从会话列表中删除。此操作无法撤销。</AlertDialog.Description>
+      <AlertDialog.Title className="text-xl font-semibold text-balance">{workspace ? '删除这个工作区？' : '删除这个会话？'}</AlertDialog.Title>
+      <AlertDialog.Description className="mt-3 text-sm text-muted text-pretty">{description || `“${title}”将从会话列表中删除。此操作无法撤销。`}</AlertDialog.Description>
       {error && <p role="alert" className="inline-error mt-4">{error}</p>}
       <div className="mt-6 flex justify-end gap-3">
-        <AlertDialog.Cancel asChild><Button disabled={busy}>保留会话</Button></AlertDialog.Cancel>
-        <Button variant="danger" disabled={busy} onClick={onDelete}>{busy ? '正在删除…' : '删除会话'}</Button>
+        <AlertDialog.Cancel asChild><Button disabled={busy}>{workspace ? '保留工作区' : '保留会话'}</Button></AlertDialog.Cancel>
+        <Button variant="danger" disabled={busy} onClick={onDelete}>{busy ? '正在删除…' : workspace ? '删除工作区及其内容' : '删除会话'}</Button>
       </div>
     </AlertDialog.Content>
   </AlertDialog.Portal></AlertDialog.Root>
