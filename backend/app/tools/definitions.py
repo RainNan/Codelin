@@ -51,21 +51,21 @@ async def run_command_tool(
 
 @tool
 def index_codebase(workspace: Annotated[str, InjectedToolArg],
-                   session_id: Annotated[str, InjectedToolArg]) -> str:
+                   workspace_id: Annotated[str, InjectedToolArg]) -> str:
     """为当前工作区建立代码索引（向量+BM25）。在需要语义搜索代码、或文件较多时先调用。"""
     from app.rag.service import index_workspace
-    return index_workspace(session_id, Path(workspace))
+    return index_workspace(workspace_id, Path(workspace))
 
 
 @tool
 def search_code(query: str,
                 workspace: Annotated[str, InjectedToolArg],
-                session_id: Annotated[str, InjectedToolArg]) -> str:
+                workspace_id: Annotated[str, InjectedToolArg]) -> str:
     """混合检索（关键词+语义）工作区代码，返回带 文件:行号 的相关片段。
     适合"XX功能在哪实现/哪里处理了YY"这类问题，比逐个 read_file 高效。"""
     from app.rag.service import hybrid_search
-    return hybrid_search(session_id, query)
+    return hybrid_search(workspace_id, query)
 
 
-TOOL_LIST = [list_dir, read_file, write_file, grep, run_command_tool]
+TOOL_LIST = [list_dir, read_file, write_file, grep, run_command_tool, index_codebase, search_code]
 TOOL_REGISTRY = {t.name: t for t in TOOL_LIST}  # key 即 "run_command"

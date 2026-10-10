@@ -1,18 +1,22 @@
 """M5 版入口：认证 + 会话 + Postgres Checkpoint + 限流。"""
 import json
 import asyncio
+from functools import partial
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.background import BackgroundTask
 
 from app.agents import graph as graph_mod
 from app.agents.runner import resume_events, sse_events
 from app.api import auth, sessions, workspaces, files
 from app.api.workspaces import owned_workspace
-from app.db.migrate import upgrade_database
+from app.db.initialize import initialize_database
+from app.lifecycle import owned_session, prepare_agent_workspace
+from app.operations import Operation
 from app.files.service import FileError
 from app.api.auth import current_user
 from app.api.ratelimit import check_rate_limit
@@ -24,7 +28,7 @@ from app.llm.titles import DEFAULT_TITLE, start_title_task, stop_title_tasks
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await asyncio.to_thread(upgrade_database)
+    await asyncio.to_thread(initialize_database)
     # 2) LangGraph Checkpoint 换 PostgreSQL：进程重启会话不丢
     from app.agents.checkpoints import ThreadedPostgresSaver
     async with ThreadedPostgresSaver.open(settings.checkpoint_db_url) as cp:
@@ -103,6 +107,34 @@ async def persisted_stream(
         db.commit()
 
 
+async def guarded_stream(events, sid, db, guard, title_pending=False):
+    try:
+        async for event in persisted_stream(events, sid, db, title_pending):
+            guard.check()
+            yield event
+    finally:
+        guard.close()
+
+
+def chat_context(db, uid, sid):
+    owned_session(db, uid, sid)
+    guard = Operation()
+    try:
+        guard.acquire(f"session:{sid}")
+        db.expire_all()
+        session = owned_session(db, uid, sid)
+        workspace = None
+        if session.workspace_id:
+            guard.acquire(f"workspace:{session.workspace_id}", "shared")
+            workspace = owned_workspace(db, uid, session.workspace_id)
+        factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
+        prepare = partial(prepare_agent_workspace, factory, uid, sid, guard)
+        return session, workspace, factory, prepare, guard
+    except BaseException:
+        guard.close()
+        raise
+
+
 class ChatIn(BaseModel):
     session_id: str
     message: str
@@ -115,30 +147,39 @@ async def chat(
         db: Session = Depends(get_db),
 ):
     check_rate_limit(user.id)
-    s = db.get(ChatSession, body.session_id)
-    if not s or s.user_id != user.id:
-        raise HTTPException(404, "会话不存在")
-    workspace = owned_workspace(db, user.id, s.workspace_id)
-    first_message = db.query(Message.id).filter_by(session_id=s.id, role="user").first() is None
+    s, workspace, factory, prepare, guard = chat_context(db, user.id, body.session_id)
+    try:
+        return await start_chat(body, user, db, s, workspace, factory, prepare, guard)
+    except BaseException:
+        guard.close()
+        raise
 
-    # 是否需要生成对话标题（默认第一次对话生成）
-    title_pending = (
-            first_message
-            and s.title == DEFAULT_TITLE
+
+async def start_chat(body, user, db, s, workspace, factory, prepare, guard):
+    snapshot = await graph_mod.graph.aget_state({"configurable": {"thread_id": s.id}})
+    if snapshot.next == ("approve",):
+        raise HTTPException(409, "请先批准或拒绝待审批的操作")
+    # 未命名的对话可重试失败的标题任务，始终概括最早的用户消息。
+    needs_title = (
+            s.title == DEFAULT_TITLE
+            and getattr(s, "auto_title", True)
             and bool(body.message.strip())
     )
 
     message = Message(session_id=s.id, role="user", content=body.message)
     db.add(message)
     db.commit()
-    if title_pending:
+    title_pending = False
+    if needs_title:
         # Never hand the request-scoped Session to an asynchronous background task.
-        factory = sessionmaker(bind=db.get_bind(), expire_on_commit=False)
-        start_title_task(factory, s.id, user.id, message.id, body.message)
+        first = db.query(Message).filter_by(session_id=s.id, role="user").order_by(Message.id).first()
+        title_pending = start_title_task(factory, s.id, user.id, first.id, first.content)
 
-    events = sse_events(s.id, workspace.root_path, body.message, session_id=s.id, workspace_id=workspace.id)
+    events = sse_events(s.id, workspace.root_path if workspace else None, body.message, session_id=s.id,
+                        workspace_id=workspace.id if workspace else None, prepare_workspace=prepare, operation=guard)
     return StreamingResponse(
-        persisted_stream(events, s.id, db, title_pending),
+        guarded_stream(events, s.id, db, guard, title_pending),
+        background=BackgroundTask(guard.close),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -158,13 +199,19 @@ async def approve(
         user: User = Depends(current_user),
         db: Session = Depends(get_db)
 ):
-    s = db.get(ChatSession, body.session_id)
-    if not s or s.user_id != user.id:
-        raise HTTPException(404)
-    workspace = owned_workspace(db, user.id, s.workspace_id)
-    events = resume_events(body.session_id, body.approved, workspace_id=workspace.id)
+    s, workspace, factory, prepare, guard = chat_context(db, user.id, body.session_id)
+    try:
+        snapshot = await graph_mod.graph.aget_state({"configurable": {"thread_id": s.id}})
+        if snapshot.next != ("approve",) or not workspace:
+            raise HTTPException(409, "当前对话没有待审批操作")
+    except BaseException:
+        guard.close()
+        raise
+    events = resume_events(body.session_id, body.approved, workspace_id=workspace.id,
+                           prepare_workspace=prepare, operation=guard)
     return StreamingResponse(
-        persisted_stream(events, s.id, db),
+        guarded_stream(events, s.id, db, guard),
+        background=BackgroundTask(guard.close),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -179,9 +226,7 @@ def get_messages(
         user: User = Depends(current_user),
         db: Session = Depends(get_db)
 ):
-    s = db.get(ChatSession, sid)
-    if not s or s.user_id != user.id:
-        raise HTTPException(404)
+    owned_session(db, user.id, sid)
     rows = db.query(Message).filter_by(session_id=sid).order_by(Message.id).all()
     return [{"role": m.role, "content": m.content, "created_at": str(m.created_at)}
             for m in rows]

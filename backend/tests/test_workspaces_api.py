@@ -85,8 +85,7 @@ async def test_workspace_shared_by_chats_and_retained_after_chat_deletion(api_cl
     chats = [(await client.post("/api/sessions", json={"workspace_id": wid})).json() for _ in range(2)]
     assert len((await client.get("/api/sessions", params={"workspace_id": wid})).json()) == 2
     with factory() as db:
-        roots = [db.get(ChatSession, chat["id"]).workspace_path for chat in chats]
-        assert roots[0] == roots[1] == db.get(Workspace, wid).root_path
+        assert all(db.get(ChatSession, chat["id"]).workspace_id == wid for chat in chats)
         db.add(Message(session_id=chats[0]["id"], role="user", content="hello"))
         db.add(ToolInvocation(session_id=chats[0]["id"], call_id="c", tool="read_file", args={}, ok=True, duration_ms=1))
         db.commit()
@@ -99,11 +98,12 @@ async def test_workspace_shared_by_chats_and_retained_after_chat_deletion(api_cl
 
 
 @pytest.mark.asyncio
-async def test_empty_body_sessions_and_file_errors_remain_compatible(api_client):
+async def test_empty_body_creates_independent_session_and_file_errors(api_client):
     client, _, _ = api_client
     response = await client.post("/api/sessions")
-    assert response.status_code == 200 and response.json()["workspace_id"]
-    wid = response.json()["workspace_id"]
+    assert response.status_code == 200 and response.json()["workspace_id"] is None
+    assert (await client.get("/api/workspaces")).json() == []
+    wid = await workspace(client)
     prefix = f"/api/workspaces/{wid}"
     assert (await client.get(prefix + "/files")).json()["entries"] == []
     assert (await client.get(prefix + "/file", params={"path": "../outside"})).status_code == 403
@@ -113,20 +113,24 @@ async def test_empty_body_sessions_and_file_errors_remain_compatible(api_client)
 
 
 @pytest.mark.asyncio
-async def test_chat_uses_workspace_root_instead_of_legacy_path(api_client, modules, monkeypatch):
+async def test_chat_uses_workspace_root(api_client, modules, monkeypatch):
     client, factory, _ = api_client
     runner, main = modules
     wid = await workspace(client)
     sid = (await client.post("/api/sessions", json={"workspace_id": wid})).json()["id"]
     with factory() as db:
-        db.get(ChatSession, sid).workspace_path = "incorrect-old-path"
+        assert not hasattr(db.get(ChatSession, sid), "workspace_path")
         correct_root = db.get(Workspace, wid).root_path
         db.commit()
     calls = []
-    async def fake_events(thread_id, workspace, message, session_id, *, workspace_id):
+    async def fake_events(thread_id, workspace, message, session_id, *, workspace_id, **kwargs):
         calls.append((workspace, workspace_id))
         yield 'event: done\ndata: {"elapsed_ms": 1}\n\n'
     monkeypatch.setattr(main, "sse_events", fake_events)
     monkeypatch.setattr(main, "check_rate_limit", lambda uid: None)
+    async def empty_state(config):
+        from types import SimpleNamespace
+        return SimpleNamespace(next=(), tasks=())
+    monkeypatch.setattr(runner.graph_mod.graph, "aget_state", empty_state)
     assert (await client.post("/api/chat", json={"session_id": sid, "message": "hello"})).status_code == 200
     assert calls == [(correct_root, wid)]

@@ -34,14 +34,15 @@ def endpoint(modules, monkeypatch):
             yield "messages", (AIMessage(content="你好"), {"langgraph_node": "agent"})
 
         async def aget_state(self, config):
-            return SimpleNamespace(next=(), tasks=())
+            pending = getattr(main.app.state, "pending_test_approval", False) and not calls
+            return SimpleNamespace(next=("approve",) if pending else (), tasks=())
 
     class FakeDB:
         def __init__(self):
             self.messages = []
 
         def get(self, model, sid):
-            return SimpleNamespace(id=sid, user_id="user-1", title="自定义标题", workspace_id="workspace-1", workspace_path="test-workspace")
+            return SimpleNamespace(id=sid, user_id="user-1", title="自定义标题", workspace_id="workspace-1")
 
         def query(self, model):
             return self
@@ -58,10 +59,19 @@ def endpoint(modules, monkeypatch):
         def commit(self):
             pass
 
+        def expire_all(self):
+            pass
+
+        def get_bind(self):
+            from sqlalchemy import create_engine
+            return create_engine("sqlite://")
+
     db = FakeDB()
     monkeypatch.setattr(runner.graph_mod, "graph", FakeGraph())
     monkeypatch.setattr(main, "check_rate_limit", lambda uid: None)
     monkeypatch.setattr(main, "owned_workspace", lambda db, uid, wid: SimpleNamespace(id=wid, root_path="test-workspace"))
+    monkeypatch.setattr(main, "owned_session", lambda db, uid, sid: db.get(None, sid))
+    main.app.state.pending_test_approval = False
     main.app.dependency_overrides[main.current_user] = lambda: SimpleNamespace(id="user-1")
     main.app.dependency_overrides[main.get_db] = lambda: db
     try:
@@ -90,6 +100,7 @@ async def test_chat_endpoint_passes_session_id_and_persists_reply(endpoint):
 @pytest.mark.parametrize("approved", [True, False])
 async def test_approval_endpoint_resumes_same_checkpoint(endpoint, approved):
     app, calls, db = endpoint
+    app.state.pending_test_approval = True
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post("/api/chat/approve", json={"session_id": "session-1", "approved": approved})
     assert response.status_code == 200

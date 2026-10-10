@@ -3,6 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 from langgraph.checkpoint.postgres import PostgresSaver
+from app.async_utils import run_blocking
 
 
 class ThreadedPostgresSaver(PostgresSaver):
@@ -33,12 +34,12 @@ class ThreadedPostgresSaver(PostgresSaver):
             await asyncio.to_thread(rows.close)
 
     async def aput(self, config, checkpoint, metadata, new_versions):
-        return await asyncio.to_thread(
+        return await run_blocking(
             self.put, config, checkpoint, metadata, new_versions
         )
 
     async def aput_writes(self, config, writes, task_id, task_path=""):
-        await asyncio.to_thread(self.put_writes, config, writes, task_id, task_path)
+        await run_blocking(self.put_writes, config, writes, task_id, task_path)
 
     async def adelete_thread(self, thread_id):
-        await asyncio.to_thread(self.delete_thread, thread_id)
+        await run_blocking(self.delete_thread, thread_id)

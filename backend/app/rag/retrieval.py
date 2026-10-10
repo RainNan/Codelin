@@ -22,12 +22,15 @@ def code_tokenize(text: str) -> list[str]:
 
 
 class BM25Index:
-    """每个 session 一个索引，index_codebase 后重建。进程内 dict 缓存。"""
+    """每个工作区一个索引；排名使用数据库主键，避免重建后序号错配。"""
     def __init__(self) -> None:
         self._store: dict[str, tuple[BM25Okapi, list[int]]] = {}  # sid → (索引, chunk_ids)
 
     def build(self, sid: str, chunks: list) -> list[int]:
-        ids = list(range(len(chunks)))
+        self.drop(sid)
+        if not chunks:
+            return []
+        ids = [c.id for c in chunks]
         tok = [code_tokenize(c.content) for c in chunks]
         self._store[sid] = (BM25Okapi(tok), ids)
         return ids
@@ -39,7 +42,10 @@ class BM25Index:
         bm25, _ = idx
         scores = bm25.get_scores(code_tokenize(query))
         ranked = sorted(range(len(scores)), key=lambda i: -scores[i])[:top_k]
-        return [i for i in ranked if scores[i] > 0]
+        return [idx[1][i] for i in ranked if scores[i] > 0]
+
+    def drop(self, wid: str):
+        self._store.pop(wid, None)
 
 
 def rrf_fuse(rankings: list[list[int]], k: int = 60) -> list[int]:

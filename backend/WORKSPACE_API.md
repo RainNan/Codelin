@@ -1,70 +1,52 @@
-# 工作空间与文件接口
+# 工作区、对话与文件接口
 
-所有接口均需要 `Authorization: Bearer <token>`，继续使用现有 JSON 注册 / 登录接口。前端仅传工作区 ID 与相对路径；用户归属和服务器根目录由后端确定。
+所有接口均需要 `Authorization: Bearer <token>`。工作区和对话由当前用户拥有，跨用户访问统一返回 404。客户端不能指定服务器绝对路径。
 
-## 启动与迁移
+## 初始化与清空重建
 
-在 `D:\P\Codelin\backend` 执行：
+正常启动运行 `scripts/init_database.py`，也会自动初始化空数据库。已有新版数据库保留数据，旧结构直接拒绝启动。本项目不再使用 Alembic 或业务迁移脚本。
 
-```powershell
-uv sync --group dev
-.\.venv\Scripts\python.exe scripts\migrate.py
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-新增依赖是 Alembic 和 filelock，同时补齐现有 RAG 模块使用的 numpy / rank-bm25 依赖声明。
-
-应用启动也会执行相同的迁移。空数据库创建完整业务表并记录版本；现有数据库通过 Alembic 添加工作区表和会话关联。PostgreSQL 迁移使用事务和迁移锁。
-
-旧会话的目录原地保留，同一用户指向相同目录的会话归入同一个工作区。迁移不移动、覆写或删除项目文件。新目录默认位于 `backend/workspaces/{user_id}/{workspace_id}`，不随服务器启动目录变化。
-
-已有的 `ChatSession.workspace_path` 保留作兼容字段；实际聊天读取 `Workspace.root_path`。工作区不随会话删除而删除。自动降级未开放，避免丢失已经独立于会话的工作区关联。
+切换新版前停止后端，执行 `python scripts/reset_database.py --execute`，清空账号、业务表、旧 agent 状态和配置中的工作区目录，再初始化新版。省略 `--execute` 只展示脱敏的目标，不做修改。源代码、配置、已有备份及其他数据库表不受影响。LangGraph 官方存储组件仍负责初始化自己的状态表。
 
 ## 工作区
 
-### GET /api/workspaces
+- `GET /api/workspaces`：当前用户工作区列表。
+- `POST /api/workspaces`，请求 `{"name":"项目 A"}`：创建空工作区，返回 201；不会自动创建对话。
+- `GET /api/workspaces/{wid}`：工作区详情。
+- `PATCH /api/workspaces/{wid}`，请求 `{"name":"新名字"}`：重命名。
+- `DELETE /api/workspaces/{wid}`：删除工作区、其中所有对话、消息、工具记录、checkpoint、检索索引及项目文件，成功返回 `{"ok":true}`。
 
-返回当前用户的工作区列表，按创建时间倒序：
+工作区对象：`{"id":"...","name":"项目 A","created_at":"...","deleting":false}`。名称去除首尾空白，不能为空，最长 128 字符。根目录在 `WORKSPACE_ROOT/{user_id}/{workspace_id}`，不对外返回。
 
-```json
-[{"id":"工作区ID","name":"项目 A","created_at":"创建时间"}]
+## 对话
+
+- `POST /api/sessions`：不传请求体、传 `{}` 或 `{"workspace_id":null}` 时创建独立对话。传 `{"workspace_id":"...","title":"讨论项目"}` 时在自己的工作区内创建。默认标题是“新会话”。
+- `GET /api/sessions`：全部对话；`?standalone=true` 仅返回独立对话；`?workspace_id=...` 仅返回该工作区的对话。两种筛选同时使用返回 422。
+- `GET /api/sessions/{sid}`：对话详情，响应设定 `Cache-Control: no-store`。
+- `PATCH /api/sessions/{sid}`：可传 `title` 修改标题，或传 `workspace_id` 将独立对话加入工作区。聊天记录保留；重复加入同一工作区成功；已经加入后传 null 或其他工作区返回 409。手动改标题会关闭自动命名。
+- `DELETE /api/sessions/{sid}`：删除对话、消息、工具记录及 checkpoint，保留工作区、项目文件及共享索引。
+- `GET /api/sessions/{sid}/messages`：消息历史，保留原有响应格式。
+
+对话对象：`{"id":"...","title":"新会话","workspace_id":null,"created_at":"...","deleting":false}`。一个对话最多属于一个工作区，不能移出或转入另一个工作区。
+
+## 聊天与自动创建
+
+`POST /api/chat` 仍接收 `{"session_id":"...","message":"..."}`；`POST /api/chat/approve` 仍接收 `{"session_id":"...","approved":true}`。
+
+独立对话普通问答不创建工作区。agent 首次请求有效项目工具时，后端事务性地创建“新工作区”，关联原对话，再进入工具审批和执行。保留原对话 ID、消息和标题；工具失败或审批拒绝后工作区仍保留。每轮根目录以数据库归属为准。
+
+新增 SSE：
+
+```text
+event: workspace_created
+data: {"session_id":"对话ID","workspace":{"id":"工作区ID","name":"新工作区","created_at":"...","deleting":false}}
 ```
 
-### POST /api/workspaces
+此事件在实际执行工具或发出审批提示前出现；`tool_start` 表示模型请求调用，可能更早出现。前端更新分组、归属和文件上下文，流结束时重新查询对话，补偿遗漏的事件。文件栏的浏览工作区不改变对话归属。
 
-```json
-{"name":"项目 A"}
-```
+同一对话不能并行执行多轮。运行中加入或删除返回 409，工作区删除与其聊天及文件操作互斥。等待审批时允许删除对话或工作区；没有待审批操作时调用审批接口返回 409。
 
-成功返回 `201` 和工作区对象。名称不能为空，最长 128 字符。服务器绝对路径不对外返回。
-
-### GET /api/workspaces/{wid}
-
-返回指定工作区对象。不存在或属于其他用户时均返回 `404`。
-
-## 会话
-
-### POST /api/sessions
-
-```json
-{"workspace_id":"工作区ID","title":"分析项目"}
-```
-
-多个会话可以绑定同一个工作区。响应增加 `workspace_id`：
-
-```json
-{"id":"会话ID","title":"分析项目","workspace_id":"工作区ID","created_at":"创建时间"}
-```
-
-为兼容原有前端，空请求体仍可创建会话，此时同时创建一个新工作区。
-
-### GET /api/sessions?workspace_id={wid}
-
-按工作区过滤当前用户的会话；省略参数时返回当前用户全部会话。
-
-`POST /api/chat` 和 `POST /api/chat/approve` 的请求格式保持不变。聊天根目录来自会话关联的工作区；浏览器切换目录不修改聊天根目录。审批恢复生成的文本也会保存到消息历史。
-
-`DELETE /api/sessions/{sid}` 删除会话及关联的消息、工具审计和检索记录，保留工作区和文件。LangGraph checkpoint 暂保留，后续可通过单独的维护任务清理；删除后的会话无法通过 API 再访问。
+删除失败返回 500 并保留 `deleting:true`，可重试同一个 DELETE。删除中的对象禁止新聊天、加入和文件访问；只读详情和列表仍可用于展示删除进度。删除成功才清理前端缓存。不通过整个 Redis 数据库清空来释放锁。
 
 ## 文件与目录
 
@@ -187,4 +169,4 @@ FILE_LOCK_TIMEOUT=10
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-测试覆盖当前用户隔离、目录导航、原文保存、错误状态、跨进程版本竞争、写入失败保护、迁移保留旧文件、会话与工作区绑定、删除会话保留文件，以及 AI SSE 更新事件。使用临时文件和测试数据库，不调用真实模型。
+测试覆盖独立对话、单向加入、用户隔离、自动建工作区与审批恢复、共享索引、checkpoint 清理、删除失败重试、并发保护、空库初始化与限定范围重建，以及文件编辑和 AI SSE 更新事件。默认使用临时文件与隔离数据库；真实 PostgreSQL / Redis 测试设置 `CODELIN_INFRA=1` 和独立的 `CODELIN_TEST_DATABASE_URL` 后启用，不调用真实模型。

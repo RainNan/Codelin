@@ -6,7 +6,7 @@ import pytest
 from app.db.models import ChatSession, Message
 from app.llm import titles
 from test_chat_stream import modules
-from test_workspaces_api import api_client
+from test_workspaces_api import api_client, workspace
 
 
 async def new_session(client, factory, title="新会话"):
@@ -88,6 +88,18 @@ async def test_inflight_title_never_overwrites_user_change(api_client, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_explicit_rename_to_default_title_still_blocks_automatic_title(api_client, monkeypatch):
+    client, factory, _ = api_client
+    sid, mid = await new_session(client, factory)
+    async def generate(message):
+        assert (await client.patch(f"/api/sessions/{sid}", json={"title": "新会话"})).status_code == 200
+        return "不应覆盖"
+    monkeypatch.setattr(titles, "generate_title", generate)
+    await titles.update_title(factory, sid, "user-a", mid, "first")
+    assert (await client.get(f"/api/sessions/{sid}")).json()["title"] == "新会话"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["timeout", "empty", "provider"])
 async def test_model_failure_preserves_temporary_title(api_client, monkeypatch, failure):
     client, factory, _ = api_client
@@ -136,4 +148,38 @@ async def test_chat_starts_title_without_waiting_and_only_once(api_client, monke
         assert (await client.get(f'/api/sessions/{session["id"]}')).json()["title"] == "实现登录功能"
     finally:
         release.set()
+        await titles.stop_title_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inside_workspace", [False, True])
+async def test_chat_retries_failed_title_using_original_message(api_client, monkeypatch, inside_workspace):
+    from app import main
+    client, factory, _ = api_client
+    wid = await workspace(client) if inside_workspace else None
+    sid = (await client.post("/api/sessions", json={"workspace_id": wid})).json()["id"]
+    seen = []
+    async def generate(message):
+        seen.append(message)
+        if len(seen) == 1:
+            raise TimeoutError("provider temporarily unavailable")
+        return "Python 飞机大战"
+    async def events(*args, **kwargs):
+        yield 'event: done\ndata: {}\n\n'
+    monkeypatch.setattr(titles, "generate_title", generate)
+    monkeypatch.setattr(main, "check_rate_limit", lambda uid: None)
+    monkeypatch.setattr(main, "sse_events", events)
+    try:
+        first = await client.post("/api/chat", json={"session_id": sid, "message": "用python写一个飞机大战游戏"})
+        assert "session_title_pending" in first.text
+        await asyncio.gather(*list(titles._tasks))
+        assert (await client.get(f"/api/sessions/{sid}")).json()["title"] == "新会话"
+        retry = await client.post("/api/chat", json={"session_id": sid, "message": "继续完成开发"})
+        assert "session_title_pending" in retry.text
+        await asyncio.gather(*list(titles._tasks))
+        assert seen == ["用python写一个飞机大战游戏"] * 2
+        updated = (await client.get(f"/api/sessions/{sid}")).json()
+        assert updated["title"] == "Python 飞机大战" and updated["workspace_id"] == wid
+        assert not titles._session_tasks
+    finally:
         await titles.stop_title_tasks()

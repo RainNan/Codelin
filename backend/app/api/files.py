@@ -9,6 +9,7 @@ from app.api.workspaces import owned_workspace
 from app.db.models import User
 from app.db.session import get_db
 from app.files import service
+from app.operations import operation
 
 router = APIRouter(prefix="/api/workspaces/{wid}", tags=["files"])
 
@@ -29,25 +30,30 @@ def root_for(db, user, wid):
     return Path(owned_workspace(db, user.id, wid).root_path)
 
 
+def workspace_access(wid: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    owned_workspace(db, user.id, wid)
+    with operation(f"workspace:{wid}", "shared"):
+        db.expire_all()
+        yield root_for(db, user, wid)
+
+
 @router.get("/files")
 def list_files(wid: str,
                response: Response,
                path: str = Query(default=".", max_length=1024),
                offset: int = Query(default=0, ge=0),
                limit: int = Query(default=200, ge=1, le=500),
-               user: User = Depends(current_user),
-               db: Session = Depends(get_db)):
+               root: Path = Depends(workspace_access)):
     response.headers["Cache-Control"] = "no-store"
-    return service.list_directory(root_for(db, user, wid), path, offset, limit)
+    return service.list_directory(root, path, offset, limit)
 
 
 @router.get("/file")
 def get_file(wid: str,
              response: Response,
              path: str = Query(min_length=1, max_length=1024),
-             user: User = Depends(current_user),
-             db: Session = Depends(get_db)):
-    data = service.read_text(root_for(db, user, wid), path)
+             root: Path = Depends(workspace_access)):
+    data = service.read_text(root, path)
     response.headers["ETag"] = f'"{data["version"]}"'
     response.headers["Cache-Control"] = "no-store"
     return data
@@ -56,18 +62,16 @@ def get_file(wid: str,
 @router.put("/file")
 def save_file(
         wid: str, body: SaveIn, response: Response,
-        user: User = Depends(current_user),
-        db: Session = Depends(get_db)
+        root: Path = Depends(workspace_access)
 ):
-    data = service.write_text(root_for(db, user, wid), body.path, body.content, expected_version=body.version)
+    data = service.write_text(root, body.path, body.content, expected_version=body.version)
     response.headers["ETag"] = f'"{data["version"]}"'
     response.headers["Cache-Control"] = "no-store"
     return data
 
 
 @router.post("/entries", status_code=201)
-def create_entry(wid: str, body: EntryIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    root = root_for(db, user, wid)
+def create_entry(wid: str, body: EntryIn, root: Path = Depends(workspace_access)):
     if body.type == "directory":
         return service.create_directory(root, body.path)
     return service.write_text(root, body.path, body.content, create_only=True)

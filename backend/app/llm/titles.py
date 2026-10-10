@@ -12,6 +12,7 @@ from app.llm import provider
 DEFAULT_TITLE = "新会话"
 logger = logging.getLogger(__name__)
 _tasks: set[asyncio.Task] = set()
+_session_tasks: dict[str, asyncio.Task] = {}
 
 
 async def generate_title(message: str) -> str:
@@ -40,22 +41,35 @@ async def update_title(factory, sid: str, uid: str, message_id: int, message: st
         with factory() as db:
             session = db.get(ChatSession, sid)
             first = db.query(Message).filter_by(session_id=sid, role="user").order_by(Message.id).first()
-            if not session or session.user_id != uid or session.title != DEFAULT_TITLE or not first or first.id != message_id:
+            if not session or session.deleting or session.user_id != uid or not session.auto_title or session.title != DEFAULT_TITLE or not first or first.id != message_id:
                 return
         title = await generate_title(message)
         with factory() as db:
             # Atomic compare-and-set: preserve a title changed during the model call.
-            db.query(ChatSession).filter_by(id=sid, user_id=uid, title=DEFAULT_TITLE).update(
+            db.query(ChatSession).filter_by(id=sid, user_id=uid, title=DEFAULT_TITLE, auto_title=True, deleting=False).update(
                 {ChatSession.title: title}, synchronize_session=False)
             db.commit()
     except Exception as error:
-        logger.warning("Title generation failed for session %s (%s)", sid, type(error).__name__)
+        cause = error
+        while cause.__cause__ is not None:
+            cause = cause.__cause__
+        logger.warning("Title generation failed for session %s (%s; cause=%s); will retry on the next message",
+                       sid, type(error).__name__, type(cause).__name__)
 
 
 def start_title_task(factory, sid: str, uid: str, message_id: int, message: str):
+    running = _session_tasks.get(sid)
+    if running is not None and not running.done():
+        return False
     task = asyncio.create_task(update_title(factory, sid, uid, message_id, message))
     _tasks.add(task)
-    task.add_done_callback(_tasks.discard)
+    _session_tasks[sid] = task
+    def finished(completed):
+        _tasks.discard(completed)
+        if _session_tasks.get(sid) is completed:
+            _session_tasks.pop(sid, None)
+    task.add_done_callback(finished)
+    return True
 
 
 async def stop_title_tasks():

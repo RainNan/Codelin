@@ -1,5 +1,4 @@
 """工具的纯执行逻辑：框架无关，可单测，被 Agent 执行器和 MCP Server 共用。"""
-import asyncio
 import re
 import subprocess
 from pathlib import Path
@@ -86,7 +85,8 @@ def grep(
 async def run_command(workspace: Path, command: str) -> str:
     """在线程中执行命令，兼容 Windows Selector 事件循环。"""
     try:
-        proc = await asyncio.to_thread(
+        from app.async_utils import run_blocking
+        proc = await run_blocking(
             subprocess.run,
             command,
             shell=True,

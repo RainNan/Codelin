@@ -1,11 +1,10 @@
-[
-project
-]
+[project]
 name = "codelin-backend"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
+    "anyio>=4.0",
     "uvicorn[standard]>=0.30", # ASGI 服务器，standard 含 websockets/httptools
     "pydantic>=2.7", # 数据校验
     "pydantic-settings>=2.3", # .env 配置管理
@@ -21,7 +20,6 @@ dependencies = [
     "httpx>=0.27",
     "pgvector>=0.5.0",
     "bcrypt==4.3.0",
-    "alembic>=1.13",
     "filelock>=3.16",
     "numpy>=1.26",
     "rank-bm25>=0.2.2",
@@ -35,4 +33,4 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-markers = ["slow: 耗时集成测试", "eval: 评测集测试（M10）"]
+markers = ["slow: 耗时集成测试", "eval: 评测集测试（M10）", "infra: 需要 PostgreSQL 与 Redis 的隔离集成测试"]
