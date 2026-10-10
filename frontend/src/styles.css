@@ -214,6 +214,8 @@
   .session-selected .session-select { color: var(--accent); }
   .session-select { @apply flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-xl py-3 pr-1 pl-3 text-left text-xs; }
   .session-select:disabled { @apply opacity-50; }
+  .session-title { @apply flex min-w-0 items-center gap-2; }
+  .session-title-loading { @apply inline-flex shrink-0 text-muted; }
   .session-date { @apply mt-1 block text-xs text-muted; font-size: .65rem; }
   .session-delete { @apply mr-1 size-8 rounded-lg; opacity: 0; }
   .session-row:hover .session-delete, .session-row:focus-within .session-delete { opacity: 1; }

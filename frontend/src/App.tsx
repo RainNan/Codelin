@@ -10,6 +10,7 @@ import type { Approval, ChatSession, Identity, Message, StreamEvent } from './li
 import { cn, dateLabel, errorText, id, readIdentity } from './lib/utils'
 import Workbench from './components/Workbench'
 import FileBrowser from './components/FileBrowser'
+import SessionTitle from './components/SessionTitle'
 import { useWorkspaceFiles } from './lib/useWorkspaceFiles'
 import type { Workspace } from './lib/types'
 
@@ -29,6 +30,7 @@ export default function App() {
   const [chats, setChats] = useState<Record<string, Message[]>>({})
   const [loadingSessions, setLoadingSessions] = useState(false)
   const [loadingMessages, setLoadingMessages] = useState(false)
+  const [pendingTitles, setPendingTitles] = useState<Set<string>>(() => new Set())
   const [listRevision, setListRevision] = useState(0)
   const [historyRevision, setHistoryRevision] = useState(0)
   const [streamingId, setStreamingId] = useState<string | null>(null)
@@ -83,6 +85,7 @@ export default function App() {
     controller.current?.abort()
     titleRequests.current.forEach(request => request.abort())
     titleRequests.current.clear()
+    setPendingTitles(new Set())
     sessionStorage.removeItem('codelin.auth')
     setIdentity(null); setDemo(false); setSessions([]); setActiveId(null); setChats({}); setDraft('')
     setError(''); setHistoryError(''); setAuthNotice(notice); setSettingsOpen(false); setMobileOpen(false)
@@ -142,6 +145,7 @@ export default function App() {
   useEffect(() => () => {
     titleRequests.current.forEach(request => request.abort())
     titleRequests.current.clear()
+    setPendingTitles(new Set())
   }, [identity?.token])
 
   function authenticate(value: Identity) {
@@ -202,6 +206,7 @@ export default function App() {
     if (!identity || titleRequests.current.has(sid)) return
     const abort = new AbortController()
     titleRequests.current.set(sid, abort)
+    setPendingTitles(previous => new Set(previous).add(sid))
     const timeout = window.setTimeout(() => abort.abort(), 20000)
     const token = identity.token
     void (async () => {
@@ -222,7 +227,10 @@ export default function App() {
       } catch { /* Title failure must not affect the chat or its approval state. */ }
       finally {
         window.clearTimeout(timeout)
-        if (titleRequests.current.get(sid) === abort) titleRequests.current.delete(sid)
+        if (titleRequests.current.get(sid) === abort) {
+          titleRequests.current.delete(sid)
+          setPendingTitles(previous => { const next = new Set(previous); next.delete(sid); return next })
+        }
       }
     })()
   }
@@ -304,6 +312,9 @@ export default function App() {
     setDeleting(true); setDeleteError('')
     try {
       if (!demo) await api.remove(identity!.token, deleteTarget.id)
+      titleRequests.current.get(deleteTarget.id)?.abort()
+      titleRequests.current.delete(deleteTarget.id)
+      setPendingTitles(previous => { const next = new Set(previous); next.delete(deleteTarget.id); return next })
       setSessions(prev => prev.filter(session => session.id !== deleteTarget.id))
       setChats(prev => { const next = { ...prev }; delete next[deleteTarget.id]; return next })
       if (activeId === deleteTarget.id) setActiveId(null)
@@ -333,7 +344,7 @@ export default function App() {
     <div className="sidebar-section-label"><span>最近会话</span><span className="tabular-nums">{sessions.length}</span></div>
     <nav className="session-nav" aria-label="会话列表" aria-busy={loadingSessions}>
       {loadingSessions ? <div className="space-y-3 p-3" role="status" aria-label="正在加载会话"><div className="skeleton h-9" /><div className="skeleton h-9" /><div className="skeleton h-9" /></div> : <ul>{filteredSessions.map(session => <li className={cn('session-row', session.id === activeId && 'session-selected')} key={session.id}>
-        <button className="session-select" disabled={busy} onClick={() => selectSession(session.id)} aria-current={session.id === activeId ? 'page' : undefined}><MessageSquare size={16} /><span className="min-w-0"><span className="block truncate">{session.title}</span><span className="session-date">{dateLabel(session.created_at)}</span></span></button>
+        <button className="session-select" disabled={busy} onClick={() => selectSession(session.id)} aria-current={session.id === activeId ? 'page' : undefined}><MessageSquare size={16} /><span className="min-w-0"><SessionTitle title={session.title} pending={pendingTitles.has(session.id)} /><span className="session-date">{dateLabel(session.created_at)}</span></span></button>
         <Button variant="ghost" className="session-delete icon-button" aria-label={`删除会话：${session.title}`} disabled={busy} onClick={() => { setDeleteTarget(session); setDeleteError('') }}><Trash2 size={14} /></Button>
       </li>)}</ul>}
       {!loadingSessions && !filteredSessions.length && <p className="px-3 py-5 text-xs leading-6 text-muted">{filter ? '没有匹配的会话。' : '每一次创造，从新会话开始。'}</p>}
@@ -347,7 +358,7 @@ export default function App() {
     <Workbench sidebar={<aside className="sidebar">{sidebar}</aside>} sidebarVisible={sidebarVisible} filesVisible={filesVisible} setFilesVisible={setFilesVisible} files={files} theme={theme} openSequence={openSequence} status={busy ? '正在生成' : pendingApproval ? '等待审批' : ''} replyRevision={messages.filter(message => message.role === 'assistant').map(message => message.content).join('')} onAttach={attachFile}
       browser={<FileBrowser token={identity?.token} workspace={workspace} workspaces={workspaces} files={files} busy={busy} demo={demo} workspaceError={workspaceError} onSwitch={switchWorkspace} onCreate={createWorkspace} onRetryWorkspaces={() => setWorkspaceRevision(value => value + 1)} onClose={() => setFilesVisible(false)} onOpen={openFile} onError={fileError} />}
       header={<>
-      <header role="none" className="workspace-header"><div className="flex min-w-0 items-center gap-3"><Button variant="ghost" className="icon-button md:hidden" id="mobile-nav-trigger" aria-label="打开会话导航" onClick={() => setMobileOpen(true)}><Menu size={19} /></Button>{!sidebarVisible && <Button variant="ghost" className="icon-button hidden md:inline-flex" aria-label="展开侧栏" onClick={() => setSidebarVisible(true)}><Menu size={19} /></Button>}<Button variant="ghost" className="icon-button" aria-label="工作空间文件" aria-expanded={filesVisible} aria-controls="workspace-files" onClick={() => setFilesVisible(value => !value)}><Folder size={18} /></Button><span className="header-section">工作台</span><ChevronRight size={13} className="shrink-0 text-muted" /><span className="truncate text-sm font-medium">{active?.title || '新的可能'}</span></div><div className="flex items-center gap-3"><span className={cn('status-pill', demo && 'demo-pill')}>{demo ? '演示模式' : busy ? '正在处理' : pendingApproval ? '等待审批' : 'AI 编程助手'}</span><Button variant="ghost" className="icon-button" aria-label={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}</Button></div></header>
+      <header role="none" className="workspace-header"><div className="flex min-w-0 items-center gap-3"><Button variant="ghost" className="icon-button md:hidden" id="mobile-nav-trigger" aria-label="打开会话导航" onClick={() => setMobileOpen(true)}><Menu size={19} /></Button>{!sidebarVisible && <Button variant="ghost" className="icon-button hidden md:inline-flex" aria-label="展开侧栏" onClick={() => setSidebarVisible(true)}><Menu size={19} /></Button>}<Button variant="ghost" className="icon-button" aria-label="工作空间文件" aria-expanded={filesVisible} aria-controls="workspace-files" onClick={() => setFilesVisible(value => !value)}><Folder size={18} /></Button><span className="header-section">工作台</span><ChevronRight size={13} className="shrink-0 text-muted" /><span className="min-w-0 text-sm font-medium"><SessionTitle title={active?.title || '新的可能'} pending={Boolean(activeId && pendingTitles.has(activeId))} /></span></div><div className="flex items-center gap-3"><span className={cn('status-pill', demo && 'demo-pill')}>{demo ? '演示模式' : busy ? '正在处理' : pendingApproval ? '等待审批' : 'AI 编程助手'}</span><Button variant="ghost" className="icon-button" aria-label={theme === 'light' ? '切换到深色模式' : '切换到浅色模式'} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}</Button></div></header>
       {demo && <section className="demo-banner" aria-label="演示提示"><span>你正在体验演示模式，回复和执行记录均为示例。</span><button onClick={() => logout()} disabled={busy}>连接真实服务<ArrowRight size={13} /></button></section>}
       </>}
       chat={<>
