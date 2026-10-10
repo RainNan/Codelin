@@ -1,6 +1,6 @@
 # Codelin
 
-React + TypeScript 的 AI 编程工作台，支持工作空间目录浏览、Monaco 文件编辑与 AI 对话协作。工作区由登录用户拥有，会话引用工作区；进入子目录不会改变 AI 命令的执行根目录。
+React + TypeScript 的 AI 编程工作台，支持工作区目录浏览、Monaco 文件编辑与 AI 对话协作。用户拥有多个工作区和多个对话；对话可独立存在，也可属于一个工作区。
 
 ## 启动
 
@@ -11,11 +11,11 @@ React + TypeScript 的 AI 编程工作台，支持工作空间目录浏览、Mon
 ```powershell
 cd D:\P\Codelin\backend
 uv sync --group dev
-.\.venv\Scripts\python.exe scripts\migrate.py
+.\.venv\Scripts\python.exe scripts\init_database.py
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-迁移也会在应用启动时执行。已有会话目录原地保留，迁移不会移动或删除旧文件。工作区不随会话删除而删除。
+应用启动只初始化空数据库，不执行旧结构迁移，也不清空已有数据。新版不兼容旧库；首次切换到新版时，停止后端并运行 `.\.venv\Scripts\python.exe scripts\reset_database.py --execute`，清空旧账号、业务数据、agent 状态和配置中的工作区文件，再重新注册。不传 `--execute` 只展示目标。保留源码、配置和已有备份。
 
 前端，另一个 PowerShell 窗口（建议 Node.js 24）：
 
@@ -29,7 +29,10 @@ npm run dev
 
 ## 工作方式
 
-- 工作区切换同时选择该工作区的会话；尚无会话时先创建关联，再切换。新建会话复用当前工作区。AI 处理期间可自由浏览和编辑，工作区与会话切换暂时禁用。
+- 顶部新建会话创建独立对话；工作区分组内可以新建关联对话。创建工作区只建立空工作区，选择空工作区不会隐式创建对话。
+- 独立对话可以加入自己的工作区，加入后不能移出或转入其他工作区。普通问答保持独立，agent 首次请求项目工具时自动创建工作区并关联原对话，保留聊天历史。
+- 侧栏工作区入口选择对应对话；文件栏的工作区选择只改变浏览范围，不改变对话归属。AI 处理期间可浏览和编辑，工作区与对话切换暂时禁用。
+- 删除对话会清理消息、工具记录和 checkpoint，保留项目文件与共享索引。删除工作区会删除其中所有对话、状态、索引和项目文件；清理失败可重试，期间暂停访问该工作区。
 - 单击目录项目选择，双击或 Enter 打开；右侧箭头提供点击打开。方向键、Home、End 移动选择；面包屑和上一级按钮返回。每次请求只加载当前目录的直接子项，按需加载更多。
 - 宽屏支持分栏、专注文件、专注对话；中等屏幕使用文件 / 对话标签；手机使用独立文件列表、编辑器与对话视图。分隔条可拖动，也可聚焦后用方向键调整；尺寸、主题和宽屏布局保存在本地。
 - 文件标签保留草稿，重复打开激活已有标签。保存按钮和 Ctrl/Cmd + S 使用原文文件 API。标签圆点表示未保存，关闭当前文件的按钮在编辑工具栏右侧；未保存时选择保存并关闭、放弃修改或取消。
@@ -49,6 +52,8 @@ npm run test:e2e
 ```
 
 默认浏览器测试使用接口替身，真实 API 测试按需启用：
+
+后端真实 PostgreSQL / Redis 测试需使用可创建临时 schema 的独立测试数据库。设置 `CODELIN_INFRA=1` 和 `CODELIN_TEST_DATABASE_URL` 后运行 `python -m pytest tests/test_infrastructure.py -q`；测试只创建并清理自身的临时 schema 和带随机标识的 Redis 锁，不调用付费模型。
 
 ```powershell
 $env:CODELIN_LIVE = '1'
@@ -70,5 +75,3 @@ AI `write_file`、命令返回时的更新由 SSE 通知；其他进程修改通
 后端会保存审批恢复后的文本，但未提供跨刷新恢复审批卡片的状态接口。停止接收不会保证取消服务端执行。真实模型和命令的端到端运行仍依赖有效的模型与基础设施配置；本次通过受控 SSE 和后端测试验证相关流程。
 
 Monaco 已本地打包并按需加载，无 CDN 依赖。编辑器和 TypeScript worker 体积较大，生产构建会出现包大小提示。生产部署请为静态资源启用压缩和缓存，并通过同源反向代理转发 `/api`，对聊天 SSE 关闭代理缓冲。
-
-接口契约见 [WORKSPACE_API.md](backend/WORKSPACE_API.md)，前端细节见 [frontend/README.md](frontend/README.md)。
