@@ -28,17 +28,24 @@ from app.llm.titles import DEFAULT_TITLE, start_title_task, stop_title_tasks
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 启动阶段：初始化业务数据库
     await asyncio.to_thread(initialize_database)
-    # 2) LangGraph Checkpoint 换 PostgreSQL：进程重启会话不丢
+
     from app.agents.checkpoints import ThreadedPostgresSaver
+
+    # 打开 checkpoint 数据库连接
     async with ThreadedPostgresSaver.open(settings.checkpoint_db_url) as cp:
-        await asyncio.to_thread(cp.setup)  # 首次自动建 checkpoints 相关表
+        # 初始化 checkpoint 表
+        await asyncio.to_thread(cp.setup)
+
+        # 构建使用 PostgreSQL 保存状态的 Agent
         graph_mod.graph = graph_mod.build_graph(cp)
+
         try:
-            yield
+            yield  # 启动准备完成，FastAPI 开始处理请求
         finally:
+            # 关闭阶段：停止后台标题任务
             await stop_title_tasks()
-    # 退出时自动清理 checkpoint 连接
 
 
 app = FastAPI(title="Codelin", version="0.1.0", lifespan=lifespan)

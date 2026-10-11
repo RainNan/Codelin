@@ -32,7 +32,9 @@ class Settings(BaseSettings):
     # --- infra 基础设施 ---
     database_url: str = "postgresql+psycopg://codelin:codelin123@localhost:5432/codelin"
     checkpoint_db_url: str = "postgresql://codelin:codelin123@localhost:5432/codelin"
+
     redis_url: str = "redis://localhost:6379/0"
+
     jwt_secret: str = "9KdP2sR7xQzL5nT8bV3cM1jF4gH6aW0eY"  # JWT服务器密钥
     jwt_expire_minutes: int = 60 * 24 * 7
 

@@ -13,20 +13,28 @@ from app.tools import ops
 
 
 @tool
-def list_dir(path: str, workspace: Annotated[str, InjectedToolArg]) -> str:
-    """列出工作区内指定目录的直接子项。先用它了解项目结构。path 用 "." 表示根目录。"""
+def list_dir(
+        path: str,
+        workspace: Annotated[str, InjectedToolArg]
+) -> str:
+    """列出工作区内指定目录的直接子项。先用它了解项目结构"""
     return ops.list_dir(Path(workspace), path)
 
 
 @tool
-def read_file(path: str, workspace: Annotated[str, InjectedToolArg]) -> str:
+def read_file(
+        path: str,
+        workspace: Annotated[str, InjectedToolArg]
+) -> str:
     """读取工作区内一个文本文件，返回带行号的全部内容。适合查看源码/配置。"""
     return ops.read_file(Path(workspace), path)
 
 
 @tool
 def write_file(
-        path: str, content: str, workspace: Annotated[str, InjectedToolArg]
+        path: str,
+        content: str,
+        workspace: Annotated[str, InjectedToolArg]
 ) -> str:
     """创建或完整覆写工作区内一个文件。content 必须是完整文件内容（非增量补丁）。"""
     return ops.write_file(Path(workspace), path, content)
@@ -44,23 +52,29 @@ def grep(
 
 @tool("run_command")
 async def run_command_tool(
-        command: str, workspace: Annotated[str, InjectedToolArg]
+        command: str,
+        workspace: Annotated[str, InjectedToolArg]
 ) -> str:
     """在工作区目录内执行一条 shell 命令（运行测试/安装依赖/git 等）。危险命令会被拦截等待人工审批。"""
     return await ops.run_command(Path(workspace), command)
 
+
 @tool
-def index_codebase(workspace: Annotated[str, InjectedToolArg],
-                   workspace_id: Annotated[str, InjectedToolArg]) -> str:
+def index_codebase(
+        workspace: Annotated[str, InjectedToolArg],
+        workspace_id: Annotated[str, InjectedToolArg]
+) -> str:
     """为当前工作区建立代码索引（向量+BM25）。在需要语义搜索代码、或文件较多时先调用。"""
     from app.rag.service import index_workspace
     return index_workspace(workspace_id, Path(workspace))
 
 
 @tool
-def search_code(query: str,
-                workspace: Annotated[str, InjectedToolArg],
-                workspace_id: Annotated[str, InjectedToolArg]) -> str:
+def search_code(
+        query: str,
+        workspace: Annotated[str, InjectedToolArg],
+        workspace_id: Annotated[str, InjectedToolArg]
+) -> str:
     """混合检索（关键词+语义）工作区代码，返回带 文件:行号 的相关片段。
     适合"XX功能在哪实现/哪里处理了YY"这类问题，比逐个 read_file 高效。"""
     from app.rag.service import hybrid_search

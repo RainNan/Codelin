@@ -1,13 +1,5 @@
-"""LLM 工厂：一处注册，处处使用。切换/新增模型只改这里。
-
-设计要点：所有供应商都走 OpenAI 兼容协议（model_provider="openai" +
-自定义 base_url），所以增加一个新供应商 = 加一个字典条目。
-这就是面试所说的"多模型抽象与路由能力"的最小实现。
-"""
-from functools import lru_cache
-
+"""LLM 工厂"""
 from langchain.chat_models import init_chat_model
-
 from app.config import settings
 
 
@@ -41,10 +33,7 @@ def _registry() -> dict:
 
 
 def get_llm(key: str | None = None):
-    """返回一个 LangChain ChatModel 实例。
-
-    key 为空时用 settings.model_provider，实现"全局默认模型"。
-    """
+    """返回一个 LangChain ChatModel 实例。"""
     key = key or settings.model_provider
     if key not in (reg := _registry()):
         raise ValueError(f"未知模型: {key}，可选: {list(reg)}")
