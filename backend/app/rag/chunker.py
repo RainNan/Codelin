@@ -16,6 +16,7 @@ class Chunk:
 
 
 def chunk_code(path: str, text: str) -> list[Chunk]:
+    """按结构边界将代码文本切分为块，并对超长块进行滑窗切分"""
     lines = text.splitlines()
     # 1) 找结构边界行号
     bounds = [m.start() for m in TOP_BOUNDARY.finditer(text)]

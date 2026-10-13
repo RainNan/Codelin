@@ -20,7 +20,13 @@ async def sse_events(
         prepare_workspace=None,
         operation=None,
 ) -> AsyncGenerator[str, None]:
-    cfg = {"configurable": {"thread_id": thread_id, "prepare_workspace": prepare_workspace, "operation": operation}}
+    cfg = {
+        "configurable": {
+            "thread_id": thread_id,
+            "prepare_workspace": prepare_workspace,
+            "operation": operation,
+        }
+    }
     inputs = resume or {
         "messages": [HumanMessage(content=user_message)],
         "workspace": workspace,
@@ -82,7 +88,8 @@ async def sse_events(
                             })
                     elif node == "prepare_workspace":
                         if update.get("workspace_created"):
-                            yield sse("workspace_created", {"session_id": session_id, "workspace": update["workspace_created"]})
+                            yield sse("workspace_created",
+                                      {"session_id": session_id, "workspace": update["workspace_created"]})
                     elif node == "execute":
                         for m in msgs:
                             if isinstance(m, ToolMessage):
@@ -98,7 +105,7 @@ async def sse_events(
             # updates 的 dict 里 node 为 "execute"
         # 流结束仍可能有挂起的中断（approve 节点）
         snapshot = await graph_mod.graph.aget_state(cfg)
-        if snapshot.next:  # 非空 = 图停在某节点等待
+        if snapshot.next:  # 图是否还有后续待执行的节点？如果有
             # for task in snapshot.tasks.values():
             for task in snapshot.tasks:
                 for intr in getattr(task, "interrupts", []):
@@ -117,7 +124,8 @@ async def sse_events(
             calls = getattr(messages[-1], "tool_calls", []) if messages else []
             if calls:
                 await graph_mod.graph.aupdate_state(cfg, {"messages": [
-                    ToolMessage(content=f"工具未执行：{type(e).__name__}: {e}", tool_call_id=call["id"], name=call["name"])
+                    ToolMessage(content=f"工具未执行：{type(e).__name__}: {e}", tool_call_id=call["id"],
+                                name=call["name"])
                     for call in calls
                 ]}, as_node="execute")
         except Exception:

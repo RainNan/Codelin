@@ -1,4 +1,4 @@
-"""Do not release resource leases while a cancelled worker still mutates files."""
+"""就算上层请求取消任务，只要后台线程还在修改文件，就不能释放资源租约 / 文件锁；必须等磁盘操作完成，再响应取消。防止文件损坏"""
 import asyncio
 from anyio import CancelScope
 

@@ -19,6 +19,7 @@ MAX_FILE_CHARS = 100_000
 
 
 def iter_code_files(workspace: Path):
+    """递归遍历工作目录，按路径顺序返回通过安全校验的代码文件。"""
     for p in sorted(workspace.rglob("*")):
         relative = p.relative_to(workspace)
         if (p.is_file() and p.suffix.lower() in CODE_EXTS

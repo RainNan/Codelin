@@ -1,6 +1,6 @@
 from langgraph.graph import MessagesState
 from typing import NotRequired
-
+from typing import TypedDict
 
 class CodelinState(MessagesState):
     """Agent 各节点共享的状态结构，运行时以字典形式访问。
@@ -27,7 +27,6 @@ class CodelinState(MessagesState):
 
     # 工作区 ID
     workspace_id: NotRequired[str | None]
-
     # Agent 自动创建工作区后，需要通知前端的信息
     workspace_created: NotRequired[dict | None]
 

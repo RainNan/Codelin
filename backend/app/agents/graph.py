@@ -33,14 +33,21 @@ OPS_REGISTRY: dict[str, object] = {
 
 async def agent_node(state: CodelinState) -> dict:
     """调 LLM。messages 已含全部历史（含工具结果），LLM 决定继续调工具或收尾。"""
-    context = ("当前对话属于工作区，文件工具只能访问该工作区。" if state.get("workspace_id") else
-               "当前是独立对话。知识问答直接回答；开发任务仍应调用项目工具，系统会自动建立空工作区并关联原对话。不要声称该空工作区已有用户项目。")
+    context = (
+        "当前对话属于工作区，文件工具只能访问该工作区。"
+        if state.get("workspace_id")
+        else
+        "当前是独立对话。知识问答直接回答；开发任务仍应调用项目工具，"
+        "系统会自动建立空工作区并关联原对话。"
+        "不要声称该空工作区已有用户项目。"
+    )
     messages = [SystemMessage(content=SYSTEM_PROMPT + "\n\n" + context), *state["messages"]]
     resp: AIMessage = await _llm_with_tools.ainvoke(messages)
     return {"messages": [resp]}
 
 
 async def prepare_workspace_node(state: CodelinState, config: RunnableConfig) -> dict:
+    """确保工具执行前，已经有合法的工作区"""
     calls = getattr(state["messages"][-1], "tool_calls", [])
     if not any(c["name"] in (*OPS_REGISTRY, "run_command") for c in calls):
         return {"workspace_created": None}
@@ -141,6 +148,7 @@ def build_graph(checkpointer=None):
     g.add_node("prepare_workspace", prepare_workspace_node)
     g.add_node("approve", approve_node)
     g.add_node("execute", execute_node)
+
     g.add_edge(START, "agent")
     g.add_conditional_edges("agent", route_after_agent,
                             {"prepare_workspace": "prepare_workspace", END: END})
@@ -148,6 +156,7 @@ def build_graph(checkpointer=None):
                             {"approve": "approve", "execute": "execute"})
     g.add_edge("approve", "execute")
     g.add_edge("execute", "agent")  # execute 完成后清空审批标记再回 agent
+
     return g.compile(checkpointer=checkpointer)
 
 
