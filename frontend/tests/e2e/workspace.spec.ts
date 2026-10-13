@@ -2,6 +2,27 @@ import { test, expect, type Page } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
 import { mkdir } from 'node:fs/promises'
 
+// A controllable ReadableStream exercises incremental delivery and cancellation,
+// unlike route.fulfill, which delivers the complete response in a single batch.
+async function controlledStream(page: Page) {
+  await page.evaluate(() => {
+    const original = window.fetch.bind(window)
+    window.fetch = async (input, init) => {
+      if (String(input).endsWith('/api/chat')) return new Response(new ReadableStream({ start(controller) {
+        Object.assign(window, { codelinTestEmit: (event: string, data: unknown, end = false) => {
+          controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+          if (end) controller.close()
+        } })
+        init?.signal?.addEventListener('abort', () => controller.error(new DOMException('Aborted', 'AbortError')), { once: true })
+      } }), { headers: { 'Content-Type': 'text/event-stream' } })
+      return original(input, init)
+    }
+  })
+}
+async function emit(page: Page, event: string, data: unknown, end = false) {
+  await page.evaluate(({ event, data, end }) => (window as unknown as { codelinTestEmit: (event: string, data: unknown, end: boolean) => void }).codelinTestEmit(event, data, end), { event, data, end })
+}
+
 async function demo(page: Page) {
   await page.goto('/')
   await page.getByRole('button', { name: '体验演示' }).click()
@@ -172,6 +193,84 @@ test('expired credentials return to login and clear the session token', async ({
   await page.getByRole('button', { name: '发送消息' }).click()
   await expect(page.getByRole('heading', { name: '欢迎回来。' })).toBeVisible()
   expect(await page.evaluate(() => sessionStorage.getItem('codelin.auth'))).toBeNull()
+})
+
+test('incremental SDK messages show tool progress, errors, highlighted code and responsive cards', async ({ page }) => {
+  await mockBackend(page)
+  await page.setViewportSize({ width: 1440, height: 960 })
+  await controlledStream(page)
+  await page.getByRole('button', { name: '新建会话' }).click()
+  await page.getByLabel('给 Codelin 发送消息').fill('审查项目')
+  await page.getByRole('button', { name: '发送消息' }).click()
+  await expect(page.getByRole('button', { name: '停止接收回复' })).toBeVisible()
+  await emit(page, 'tool_start', { id: 'read', name: 'read_file', args: { path: 'src/App.tsx' } })
+  await expect(page.locator('.tool-state')).toHaveText('执行中')
+  await emit(page, 'token', { content: '正在分析项目。' })
+  await expect(page.getByText('正在分析项目。', { exact: true })).toBeVisible()
+  await emit(page, 'tool_result', { id: 'read', name: 'read_file', preview: '文件读取完成。' })
+  await emit(page, 'tool_start', { id: 'search', name: 'grep', args: { pattern: 'TODO' } })
+  await emit(page, 'tool_error', { id: 'search', message: '搜索暂时不可用。' })
+  await expect(page.getByText('执行失败', { exact: true })).toBeVisible()
+  await page.getByText('搜索代码', { exact: true }).click()
+  await expect(page.getByText('搜索暂时不可用。', { exact: true })).toBeVisible()
+  const code = Array.from({ length: 26 }, (_, index) => `const value${index} = ${index}`).join('\n')
+  await emit(page, 'token', { content: `\n\n### 实现建议\n\n\`\`\`ts\n${code}\n\`\`\`\n` })
+  await emit(page, 'done', { elapsed_ms: 1400 }, true)
+  await expect(page.getByRole('button', { name: '发送消息' })).toBeVisible()
+  await expect(page.locator('.hljs-keyword').first()).toHaveText('const')
+  await expect(page.getByRole('button', { name: '展开全部 26 行' })).toHaveAttribute('aria-expanded', 'false')
+  await page.getByRole('button', { name: '展开全部 26 行' }).click()
+  await expect(page.getByRole('button', { name: '收起代码' })).toHaveAttribute('aria-expanded', 'true')
+  await page.getByRole('button', { name: '收起代码' }).click()
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
+  await mkdir('preview', { recursive: true })
+  await page.locator('.conversation-scroll').evaluate(element => { element.scrollTop = 0 })
+  await page.screenshot({ path: 'preview/agent-sdk-light.png', fullPage: true })
+  await page.getByRole('button', { name: '切换到深色模式' }).click()
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
+  await page.screenshot({ path: 'preview/agent-sdk-dark.png', fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.locator('.conversation-scroll').evaluate(element => { element.scrollTop = 0 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([])
+  await page.screenshot({ path: 'preview/agent-sdk-mobile.png', fullPage: true })
+})
+
+test('stopping a live SDK stream retains partial text and lets the next turn complete', async ({ page }) => {
+  await mockBackend(page)
+  await controlledStream(page)
+  await page.getByLabel('给 Codelin 发送消息').fill('检查代码')
+  await page.getByRole('button', { name: '发送消息' }).click()
+  await expect(page.getByRole('button', { name: '停止接收回复' })).toBeVisible()
+  await emit(page, 'token', { content: '这是停止前的回复。' })
+  await expect(page.getByText('这是停止前的回复。', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '停止接收回复' }).click()
+  await expect(page.getByText(/已停止接收回复。服务端可能仍在执行/)).toBeVisible()
+  await expect(page.getByLabel('给 Codelin 发送消息')).toBeEnabled()
+  await page.getByLabel('给 Codelin 发送消息').fill('继续检查')
+  await page.getByRole('button', { name: '发送消息' }).click()
+  await expect(page.getByRole('button', { name: '停止接收回复' })).toBeVisible()
+  await emit(page, 'token', { content: '下一轮完成。' })
+  await emit(page, 'done', { elapsed_ms: 30 }, true)
+  await expect(page.getByText('下一轮完成。', { exact: true })).toBeVisible()
+  await expect(page.getByText('这是停止前的回复。', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('给 Codelin 发送消息')).toBeEnabled()
+})
+
+test('a failed approval restores the pending decision and a retry appends text exactly once', async ({ page }) => {
+  await mockBackend(page, 'approval')
+  await page.getByLabel('给 Codelin 发送消息').fill('安装依赖')
+  await page.getByRole('button', { name: '发送消息' }).click()
+  await expect(page.getByRole('button', { name: '批准执行' })).toBeVisible()
+  await page.route('**/api/chat/approve', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: '审批服务暂时不可用' }) }))
+  await page.getByRole('button', { name: '批准执行' }).click()
+  await expect(page.getByRole('alert')).toContainText('审批服务暂时不可用')
+  await expect(page.getByRole('button', { name: '批准执行' })).toBeEnabled()
+  await expect(page.getByLabel('给 Codelin 发送消息')).toBeDisabled()
+  await page.route('**/api/chat/approve', route => route.fulfill({ contentType: 'text/event-stream', body: 'event: token\ndata: {"content":"继续完成。"}\n\nevent: done\ndata: {"elapsed_ms":50}\n\n' }))
+  await page.getByRole('button', { name: '批准执行' }).click()
+  await expect(page.getByText('你好，这是来自接口的回复。继续完成。', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('给 Codelin 发送消息')).toBeEnabled()
 })
 
 test('desktop, dark theme and mobile views pass automated accessibility and fit the viewport', async ({ page }) => {

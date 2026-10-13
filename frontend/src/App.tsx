@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { ArrowRight, ArrowUp, Braces, ChevronRight, Code2, FileCode2, Folder, HelpCircle, History, LogOut, Menu, Moon, PanelLeftClose, Plus, Search, Settings2, ShieldCheck, Square, Sun, Terminal, X } from 'lucide-react'
+import { ArrowDown, ArrowRight, ArrowUp, Braces, ChevronRight, Code2, FileCode2, Folder, HelpCircle, History, LogOut, Menu, Moon, PanelLeftClose, Plus, Search, Settings2, ShieldCheck, Square, Sun, Terminal, X } from 'lucide-react'
 import Auth from './components/Auth'
 import MessageView, { toolLabels } from './components/MessageView'
 import { Brand, Button, DeleteDialog, Modal } from './components/ui'
 import { api, ApiError } from './lib/api'
 import { demoMessages, demoSessions } from './lib/demo'
-import type { Approval, ChatSession, Identity, Message, StreamEvent } from './lib/types'
+import type { ChatSession, Identity, Message, StreamEvent } from './lib/types'
 import { cn, errorText, id, readIdentity } from './lib/utils'
 import Workbench from './components/Workbench'
 import FileBrowser from './components/FileBrowser'
@@ -14,6 +14,7 @@ import SessionTitle from './components/SessionTitle'
 import { useWorkspaceFiles } from './lib/useWorkspaceFiles'
 import type { Workspace } from './lib/types'
 import ConversationNav from './components/ConversationNav'
+import { useAgentStream } from './lib/useAgentStream'
 
 type Management = { kind: 'session' | 'join'; item: ChatSession } | { kind: 'workspace'; item: Workspace } | { kind: 'createWorkspace' }
 
@@ -41,6 +42,7 @@ export default function App() {
   const [error, setError] = useState('')
   const [historyError, setHistoryError] = useState('')
   const [draft, setDraft] = useState('')
+  const [showLatest, setShowLatest] = useState(false)
   const [filter, setFilter] = useState('')
   const [mobileOpen, setMobileOpen] = useState(false)
   const [sidebarVisible, setSidebarVisible] = useState(true)
@@ -63,7 +65,7 @@ export default function App() {
   const [openSequence, setOpenSequence] = useState(0)
   const [logoutConfirm, setLogoutConfirm] = useState(false)
   const sessionDrafts = useRef<Record<string, string>>({})
-  const controller = useRef<AbortController | null>(null)
+  const agentControl = useRef<{ stop: () => Promise<void> } | null>(null)
   const titleRequests = useRef(new Map<string, AbortController>())
   const membershipRequests = useRef(new Map<string, AbortController>())
   const activeRef = useRef(activeId); activeRef.current = activeId
@@ -73,7 +75,9 @@ export default function App() {
   const streamLock = useRef(false)
   const chatsRef = useRef(chats)
   chatsRef.current = chats
-  const busy = streamingId !== null || creating || deleting || managementBusy
+  const agent = useAgentStream((sid, projected) => { if (identity || demo) setChats(previous => ({ ...previous, [sid]: projected })) })
+  agentControl.current = agent
+  const busy = streamingId !== null || agent.isLoading || creating || deleting || managementBusy
   const active = sessions.find(session => session.id === activeId)
   const workspaceId = demo ? undefined : selectedWorkspaceId
   const workspace = workspaces.find(item => item.id === workspaceId)
@@ -93,7 +97,7 @@ export default function App() {
   }, [identity, activeId, demo])
 
   const logout = useCallback((notice = '') => {
-    controller.current?.abort()
+    void agentControl.current?.stop()
     titleRequests.current.forEach(request => request.abort())
     titleRequests.current.clear()
     membershipRequests.current.forEach(request => request.abort()); membershipRequests.current.clear()
@@ -155,7 +159,11 @@ export default function App() {
   }, [activeId, identity, demo, historyRevision, logout])
 
   useEffect(() => { if (followScroll.current) bottom.current?.scrollIntoView({ block: 'end' }) }, [messages, loadingMessages])
-  useEffect(() => () => controller.current?.abort(), [])
+  useEffect(() => {
+    const input = composer.current
+    if (input) { input.style.height = 'auto'; input.style.height = `${Math.min(Math.max(input.scrollHeight, 72), 192)}px` }
+  }, [draft, activeId, identity, demo])
+  useEffect(() => () => { void agentControl.current?.stop() }, [])
   useEffect(() => () => {
     titleRequests.current.forEach(request => request.abort())
     titleRequests.current.clear()
@@ -174,6 +182,7 @@ export default function App() {
     if (busy) return
     sessionDrafts.current[activeId || 'new'] = draft
     setActiveId(sid); setDraft(sessionDrafts.current[sid || 'new'] || ''); setError(''); setHistoryError(''); setMobileOpen(false); followScroll.current = true
+    setShowLatest(false)
     setSelectedWorkspaceId(sessions.find(session => session.id === sid)?.workspace_id || undefined)
   }
   async function switchWorkspace(wid: string) {
@@ -248,7 +257,7 @@ export default function App() {
       }
     })()
   }
-  function eventHandler(sid: string, mid: string) {
+  function eventHandler(sid: string) {
     return ({ event, data }: StreamEvent) => {
       if (event === 'workspace_created' && data.session_id === sid && data.workspace && typeof data.workspace === 'object') {
         const created = data.workspace as Workspace
@@ -267,20 +276,6 @@ export default function App() {
         files.refresh(data.workspace_id, event === 'file_changed' && typeof data.path === 'string' ? data.path : undefined)
         return
       }
-      updateMessage(sid, mid, message => {
-      if (event === 'token') {
-        const content = typeof data.content === 'string' ? data.content : Array.isArray(data.content) ? data.content.map(part => typeof part === 'string' ? part : part?.text || '').join('') : ''
-        return { ...message, content: message.content + content }
-      }
-      if (event === 'tool_start') return { ...message, tools: [...(message.tools || []), { id: String(data.id), name: String(data.name), args: (data.args || {}) as Record<string, unknown> }] }
-      if (event === 'tool_result') {
-        const tools = message.tools || []
-        return { ...message, tools: tools.some(tool => tool.id === data.id) ? tools.map(tool => tool.id === data.id ? { ...tool, preview: String(data.preview ?? '') } : tool) : [...tools, { id: String(data.id), name: String(data.name), args: {}, preview: String(data.preview ?? '') }] }
-      }
-      if (event === 'approval_required') return { ...message, approval: data as unknown as Approval, decision: undefined }
-      if (event === 'done') return { ...message, elapsed_ms: Number(data.elapsed_ms) }
-      return message
-      })
     }
   }
   async function syncMembership(sid: string) {
@@ -321,17 +316,15 @@ export default function App() {
     }
     const mid = id()
     const assistant: Message = { id: mid, role: 'assistant', content: '' }
-    setChats(prev => ({ ...prev, [sid!]: [...(prev[sid!] || []), { id: id(), role: 'user', content: text }, assistant] }))
+    const history: Message[] = [...(chatsRef.current[sid] || []), { id: id(), role: 'user', content: text }, assistant]
+    setChats(prev => ({ ...prev, [sid!]: history }))
     setDraft(''); setStreamingId(mid); followScroll.current = true
-    const abort = new AbortController(); controller.current = abort
     try {
-      if (demo) {
-        updateMessage(sid, mid, message => ({ ...message, content: '这是演示回复，用于预览工作流。连接后端后，Codelin 会根据你的工作区与问题生成真实回答。\n\n下面是一条示例命令审批，你可以体验批准或拒绝。', approval: { thread_id: sid!, reason: '示例命令，需要你确认后继续。演示中不会执行任何命令。', tools: [{ name: 'run_command', commands: ['npm install'] }] } }))
-      } else await api.stream(identity!.token, { session_id: sid, message: text }, eventHandler(sid, mid), abort.signal)
+      await agent.run({ sessionId: sid, messageId: mid, history, message: text }, identity?.token, demo, eventHandler(sid))
     } catch (e) {
-      if (abort.signal.aborted) updateMessage(sid, mid, m => ({ ...m, notice: '已停止接收回复。服务端可能仍在执行，稍后可重新载入会话。' }))
+      if (e instanceof Error && e.name === 'AbortError') updateMessage(sid, mid, m => ({ ...m, notice: '已停止接收回复。服务端可能仍在执行，稍后可重新载入会话。' }))
       else { updateMessage(sid, mid, m => ({ ...m, notice: errorText(e) })); handleError(e) }
-    } finally { void syncMembership(sid); setStreamingId(null); streamLock.current = false; controller.current = null }
+    } finally { void syncMembership(sid); setStreamingId(null); streamLock.current = false }
   }
   async function approve(approved: boolean) {
     if (!activeId || !pendingApproval || busy || streamLock.current) return
@@ -339,16 +332,14 @@ export default function App() {
     const originalApproval = pendingApproval.approval
     streamLock.current = true; setStreamingId(mid); setError(''); followScroll.current = true
     updateMessage(sid, mid, m => ({ ...m, decision: approved ? 'approved' : 'rejected', notice: undefined }))
-    const abort = new AbortController(); controller.current = abort
-    let resumed = false
     try {
-      if (demo) updateMessage(sid, mid, m => ({ ...m, content: m.content + (approved ? '\n\n**已批准示例命令。** 演示流程已完成，没有实际执行命令。' : '\n\n**已拒绝示例命令。** 你始终可以决定哪些操作可以继续。') }))
-      else await api.stream(identity!.token, { session_id: sid, approved }, e => { resumed = true; eventHandler(sid, mid)(e) }, abort.signal)
+      await agent.run({ sessionId: sid, messageId: mid, history: chatsRef.current[sid] || [], approved }, identity?.token, demo, eventHandler(sid))
     } catch (e) {
-      const notice = abort.signal.aborted ? '已停止接收。审批请求可能已被处理，请检查后端状态后再继续。' : errorText(e)
-      updateMessage(sid, mid, m => ({ ...m, notice, ...(resumed ? {} : { approval: originalApproval, decision: undefined }) }))
-      if (!abort.signal.aborted) handleError(e)
-    } finally { void syncMembership(sid); setStreamingId(null); streamLock.current = false; controller.current = null }
+      const stopped = e instanceof Error && e.name === 'AbortError'
+      const notice = stopped ? '已停止接收。审批请求可能已被处理，请检查后端状态后再继续。' : errorText(e)
+      updateMessage(sid, mid, m => ({ ...m, notice, approval: originalApproval }))
+      if (!stopped) handleError(e)
+    } finally { void syncMembership(sid); setStreamingId(null); streamLock.current = false }
   }
   async function removeSession() {
     if (!deleteTarget || deleting) return
@@ -452,7 +443,7 @@ export default function App() {
       {!demo && <div className="membership-bar"><span>{active ? chatWorkspace ? `对话工作区：${chatWorkspace.name}` : '独立对话' : workspace ? `工作区：${workspace.name} · 尚未选择对话` : '独立对话'}</span>{active && !active.workspace_id && <Button variant="ghost" disabled={busy || !workspaces.some(item => !item.deleting)} onClick={() => openManagement({ kind: 'join', item: active })}>加入工作区</Button>}{!active && workspace && <Button variant="ghost" disabled={busy || workspace.deleting} onClick={() => createSession(workspace.id)}>在此工作区新建对话</Button>}</div>}
       </>}
       chat={<>
-      <section aria-label="对话消息" className="conversation-scroll" onScroll={event => { const el = event.currentTarget; followScroll.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120 }}>
+      <div className="conversation-area"><section aria-label="对话消息" className="conversation-scroll" onScroll={event => { const el = event.currentTarget; const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120; followScroll.current = nearBottom; setShowLatest(!nearBottom) }}>
         {loadingMessages ? <div className="message-skeleton" role="status" aria-label="正在加载消息"><div className="skeleton ml-auto h-14 w-2/3" /><div className="skeleton mt-10 h-5 w-32" /><div className="skeleton mt-5 h-5 w-full" /><div className="skeleton mt-3 h-5 w-4/5" /><div className="skeleton mt-3 h-5 w-3/5" /></div> : historyError ? <div className="history-error"><History size={28} /><h1 className="mt-4 text-xl font-semibold text-balance">暂时无法载入会话</h1><p role="alert" className="mt-2 text-sm text-muted">{historyError}</p><Button className="mt-6" onClick={refreshHistory}>重新载入</Button></div> : messages.length ? <div className="conversation-messages">{messages.map(message => <MessageView key={message.id} message={message} streaming={streamingId === message.id} busy={busy} onApprove={approve} />)}<div ref={bottom} /></div> : <section className="welcome">
           <div className="welcome-symbol"><Code2 size={36} strokeWidth={1.6} /></div>
           <p className="welcome-eyebrow">好代码，从一个好问题开始。</p>
@@ -461,10 +452,10 @@ export default function App() {
           <div className="starter-grid">{starters.map(starter => <button className="starter-card" key={starter.title} disabled={!canSend} onClick={() => { setDraft(starter.prompt); composer.current?.focus() }}><starter.icon size={21} strokeWidth={1.6} /><span className="starter-title">{starter.title}<ArrowRight size={14} /></span><span className="starter-description">{starter.description}</span></button>)}</div>
           <p className="welcome-note"><ShieldCheck size={14} />影响环境的命令，会先征求你的确认。</p>
         </section>}
-      </section>
+      </section>{showLatest && messages.length > 0 && <Button className="jump-latest" aria-label="回到最新回复" onClick={() => { followScroll.current = true; setShowLatest(false); bottom.current?.scrollIntoView({ block: 'end' }) }}><ArrowDown size={15} />最新回复</Button>}</div>
       <section className="composer-region" aria-label="消息输入">
         {error && <div className="action-error" role="alert"><p>{error}</p><div className="flex items-center gap-2">{!busy && <Button variant="ghost" onClick={() => { setListRevision(v => v + 1); setError('') }}>重新连接</Button>}<Button variant="ghost" className="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}><X size={16} /></Button></div></div>}
-        <form className="composer" onSubmit={send} aria-busy={busy}><label htmlFor="composer" className="sr-only">给 Codelin 发送消息</label><textarea ref={composer} id="composer" value={draft} onChange={e => setDraft(e.target.value)} placeholder={pendingApproval ? '请先批准或拒绝上方的命令。' : '有什么想法？从这里开始…'} disabled={!canSend} rows={3} maxLength={32000} aria-describedby="composer-hint" onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} /><div className="composer-toolbar"><span><Code2 size={14} />{demo ? '示例工作空间' : active ? chatWorkspace?.name || '独立对话' : workspace?.name || '独立对话'}</span>{streamingId ? <Button className="send-button" aria-label="停止接收回复" onClick={() => controller.current?.abort()}><Square size={15} fill="currentColor" /></Button> : <Button className="send-button" variant="primary" aria-label="发送消息" type="submit" disabled={!canSend || !draft.trim()}><ArrowUp size={19} /></Button>}</div></form>
+        <form className="composer" onSubmit={send} aria-busy={busy}><label htmlFor="composer" className="sr-only">给 Codelin 发送消息</label><textarea ref={composer} id="composer" value={draft} onChange={e => setDraft(e.target.value)} placeholder={pendingApproval ? '请先批准或拒绝上方的命令。' : '有什么想法？从这里开始…'} disabled={!canSend} rows={3} maxLength={32000} aria-describedby="composer-hint" onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} /><div className="composer-toolbar"><span><Code2 size={14} />{demo ? '示例工作空间' : active ? chatWorkspace?.name || '独立对话' : workspace?.name || '独立对话'}</span>{streamingId ? <Button className="send-button" aria-label="停止接收回复" onClick={() => { void agent.stop() }}><Square size={15} fill="currentColor" /></Button> : <Button className="send-button" variant="primary" aria-label="发送消息" type="submit" disabled={!canSend || !draft.trim()}><ArrowUp size={19} /></Button>}</div></form>
         <div className="composer-caption" id="composer-hint"><span>{pendingApproval ? '等待你的审批后继续。' : creating ? '正在创建会话…' : 'Codelin 可能会出错，请核查重要结果。'}</span><span className="hidden sm:inline">Enter 发送 · Shift + Enter 换行</span></div>
         {activeId && messages.length > 0 && !busy && !demo && <button className="reload-history" onClick={refreshHistory}>重新载入已保存的消息</button>}
       </section>      </>} />

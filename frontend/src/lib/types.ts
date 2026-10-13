@@ -5,7 +5,7 @@ export interface FileEntry { name: string; path: string; type: 'file' | 'directo
 export interface DirectoryPage { path: string; entries: FileEntry[]; total: number; next_offset: number | null }
 export interface FileContent extends FileEntry { content: string; version: string }
 export interface FileSaved extends FileEntry { version: string; operation: string }
-export interface ToolRun { id: string; name: string; args: Record<string, unknown>; preview?: string }
+export interface ToolRun { id: string; name: string; args: Record<string, unknown>; preview?: string; status?: 'running' | 'finished' | 'error'; error?: string }
 export interface Approval { thread_id: string; reason: string; tools: { name: string; commands: string[] }[] }
 export interface Message {
   id: string
