@@ -7,14 +7,13 @@ from sqlalchemy import text as sql_text
 
 from app.db.models import CodeChunk
 from app.db.session import SessionLocal
-from app.rag.chunker import chunk_code
+from app.rag.chunker import LANGUAGE_BY_EXT, LANGUAGE_BY_NAME, chunk_code
 from app.rag.embeddings import get_embedder
 from app.rag.retrieval import bm25_store, rrf_fuse
 from app.files.service import safe_path, FileError
 from app.operations import operation
 
-CODE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".c", ".cpp", ".h",
-             ".sql", ".sh", ".yaml", ".yml", ".toml", ".json", ".md", ".txt", ".html", ".css"}
+CODE_EXTS = set(LANGUAGE_BY_EXT) | {".txt"}
 MAX_FILE_CHARS = 100_000
 
 
@@ -22,7 +21,7 @@ def iter_code_files(workspace: Path):
     """递归遍历工作目录，按路径顺序返回通过安全校验的代码文件。"""
     for p in sorted(workspace.rglob("*")):
         relative = p.relative_to(workspace)
-        if (p.is_file() and p.suffix.lower() in CODE_EXTS
+        if (p.is_file() and (p.suffix.lower() in CODE_EXTS or p.name.lower() in LANGUAGE_BY_NAME)
                 and not any(part.startswith(".") for part in relative.parts)):
             try:
                 yield safe_path(workspace, relative.as_posix())
